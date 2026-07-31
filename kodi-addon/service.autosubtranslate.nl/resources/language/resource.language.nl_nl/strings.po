@@ -1,0 +1,20 @@
+# Kodi Media Center language file
+msgid ""
+msgstr ""
+"Project-Id-Version: Automatische Nederlandse Ondertitels\n"
+"Language: nl_NL\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgctxt "#32000"
+msgid "General"
+msgstr "Algemeen"
+
+msgctxt "#32001"
+msgid "Controlled subtitle folder"
+msgstr "Gecontroleerde ondertitelmap"
+
+msgctxt "#32002"
+msgid "Kodi and the Radxa must both be able to read and write this folder."
+msgstr "Kodi en de Radxa moeten deze map allebei kunnen lezen en beschrijven."

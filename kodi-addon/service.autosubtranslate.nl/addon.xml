@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="service.autosubtranslate.nl"
+       name="Automatische Nederlandse Ondertitels"
+       version="0.1.0"
+       provider-name="cracknek22">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+  <extension point="xbmc.service" library="service.py"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="nl_NL">Bevestig en vertaal Engelse SRT-ondertitels automatisch naar Nederlands.</summary>
+    <summary lang="en_GB">Confirm and translate English SRT subtitles automatically to Dutch.</summary>
+    <description lang="nl_NL">Toont eerst een bevestigingsvenster in Kodi. Alleen na Ja vertaalt de Radxa de gekozen SRT, met behoud van alle originele tijdstempels.</description>
+    <description lang="en_GB">Shows a confirmation dialog in Kodi first. Only after confirmation does the Radxa translate the selected SRT while preserving every original timestamp.</description>
+    <platform>all</platform>
+    <license>MIT</license>
+    <source>https://github.com/cracknek22/kodi-auto-subtitle-nl</source>
+  </extension>
+</addon>
