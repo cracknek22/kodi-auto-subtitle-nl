@@ -25,6 +25,7 @@ from core import (  # noqa: E402
     first_dialogue,
     is_dutch_subtitle,
     request_path,
+    staged_subtitle_name,
     stable_candidates,
     status_path,
     validate_completed_status,
@@ -35,6 +36,7 @@ from core import (  # noqa: E402
 MAX_SUBTITLE_BYTES = 2 * 1024 * 1024
 JOBS_PATH = os.path.join(PROFILE_PATH, "jobs.json")
 TRANSLATED_PATH = os.path.join(PROFILE_PATH, "translated")
+TEMP_PATH = xbmcvfs.translatePath("special://temp/").rstrip("/").rstrip("\\") + "/"
 
 
 def log(message: str, level: int = xbmc.LOGINFO) -> None:
@@ -100,7 +102,7 @@ def configured_folder() -> str:
     return f"{cleaned}/"
 
 
-def snapshot(folder: str) -> dict[str, tuple[int, int]]:
+def _snapshot_folder(folder: str) -> dict[str, tuple[int, int]]:
     try:
         if not xbmcvfs.exists(folder):
             raise OSError("De ingestelde ondertitelmap is niet bereikbaar.")
@@ -120,6 +122,46 @@ def snapshot(folder: str) -> dict[str, tuple[int, int]]:
         except (OSError, RuntimeError):
             log(f"Kon bestandsinformatie niet lezen: {name}", xbmc.LOGWARNING)
     return result
+
+
+def snapshot(folder: str) -> dict[str, tuple[int, int]]:
+    return _snapshot_folder(folder)
+
+
+def snapshot_kodi_temp() -> dict[str, tuple[int, int]]:
+    try:
+        return _snapshot_folder(TEMP_PATH)
+    except OSError as exc:
+        log(f"Kodi-tempmap niet leesbaar: {safe_label(str(exc))}", xbmc.LOGWARNING)
+        return {}
+
+
+def stage_temp_subtitle(source: str, folder: str) -> str:
+    stat = xbmcvfs.Stat(source)
+    size = int(stat.st_size())
+    if size <= 0:
+        raise ValueError("De tijdelijke ondertitel is leeg.")
+    if size > MAX_SUBTITLE_BYTES:
+        raise ValueError("Ondertitel is groter dan 2 MB.")
+
+    token = uuid.uuid4().hex
+    destination = join_vfs(folder, staged_subtitle_name(source, token))
+    if xbmcvfs.exists(destination):
+        raise OSError("Het veilige ondertitelbestand bestaat al.")
+
+    temporary = f"{destination}.{token}.tmp"
+    try:
+        if not xbmcvfs.copy(source, temporary):
+            raise OSError("Kon de tijdelijke ondertitel niet kopiëren.")
+        copied_size = int(xbmcvfs.Stat(temporary).st_size())
+        if copied_size <= 0 or copied_size > MAX_SUBTITLE_BYTES:
+            raise ValueError("De gekopieerde ondertitel heeft een ongeldige grootte.")
+        if not xbmcvfs.rename(temporary, destination):
+            raise OSError("Kon de ondertitel niet op de server opslaan.")
+    finally:
+        xbmcvfs.delete(temporary)
+
+    return destination
 
 
 def safe_label(text: str, limit: int = 140) -> str:
@@ -333,7 +375,9 @@ def main() -> None:
             9000,
         )
     previous = dict(baseline)
-    log(f"Service gestart; gecontroleerde map: {folder}")
+    temp_baseline = snapshot_kodi_temp()
+    temp_previous = dict(temp_baseline)
+    log(f"Service gestart; gecontroleerde map: {folder}; Kodi-tempmap: {TEMP_PATH}")
 
     while not monitor.waitForAbort(1.0):
         try:
@@ -358,6 +402,8 @@ def main() -> None:
                 previous = dict(baseline)
             except OSError:
                 pass
+            temp_baseline = snapshot_kodi_temp()
+            temp_previous = dict(temp_baseline)
             continue
 
         try:
@@ -365,7 +411,13 @@ def main() -> None:
         except OSError:
             continue
 
+        temp_current = snapshot_kodi_temp()
         candidates = stable_candidates(baseline, previous, current)
+        temp_candidates = stable_candidates(
+            temp_baseline,
+            temp_previous,
+            temp_current,
+        )
         if candidates:
             stream = active_subtitle_name(player)
             handled_candidates: list[str] = []
@@ -401,7 +453,57 @@ def main() -> None:
             for path in handled_candidates:
                 baseline[path] = current[path]
 
+            # Kodi kan dezelfde download ook in zijn tempmap bewaren. Wanneer
+            # de SMB-kopie er al is, voorkomt dit een tweede bevestigingspopup.
+            for path in temp_candidates:
+                temp_baseline[path] = temp_current[path]
+
+        elif temp_candidates:
+            stream = active_subtitle_name(player)
+            handled_temp_candidates: list[str] = []
+            if is_dutch_subtitle(stream):
+                handled_temp_candidates = temp_candidates
+            else:
+                temp_source = choose_candidate(temp_candidates)
+                if temp_source:
+                    handled_temp_candidates = [temp_source]
+                    try:
+                        stat = xbmcvfs.Stat(temp_source)
+                        if stat.st_size() > MAX_SUBTITLE_BYTES:
+                            raise ValueError("Ondertitel is groter dan 2 MB.")
+                        preview = first_dialogue(read_text(temp_source))
+                        if ask_yes_no(
+                            temp_source.rsplit("/", 1)[-1],
+                            stream,
+                            preview,
+                        ):
+                            staged = stage_temp_subtitle(temp_source, folder)
+                            staged_stat = xbmcvfs.Stat(staged)
+                            baseline[staged] = (
+                                int(staged_stat.st_size()),
+                                int(staged_stat.st_mtime()),
+                            )
+                            start_job(
+                                staged,
+                                current_video_fingerprint(player),
+                                jobs,
+                            )
+                    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+                        log(str(exc), xbmc.LOGERROR)
+                        xbmcgui.Dialog().notification(
+                            ADDON_NAME,
+                            safe_label(str(exc)),
+                            xbmcgui.NOTIFICATION_ERROR,
+                            8000,
+                        )
+                else:
+                    handled_temp_candidates = temp_candidates
+
+            for path in handled_temp_candidates:
+                temp_baseline[path] = temp_current[path]
+
         previous = current
+        temp_previous = temp_current
 
     log("Service gestopt")
 

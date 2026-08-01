@@ -14,6 +14,7 @@ DUTCH_RE = re.compile(
     r"(nl(?:[-_](?:nl|be))?|nld|dut|dutch|nederlands)"
     r"(?=$|[.\s_)\]\-])"
 )
+SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
 def is_dutch_subtitle(name: str) -> bool:
@@ -54,6 +55,18 @@ def stable_candidates(
 
 def _basename(path: str) -> str:
     return path.rstrip("/").rsplit("/", 1)[-1]
+
+
+def staged_subtitle_name(source_path: str, token: str) -> str:
+    source_name = _basename(source_path)
+    if not source_name.casefold().endswith(".srt"):
+        raise ValueError("geen geldige SRT voor tijdelijke opslag")
+    if not re.fullmatch(r"[a-f0-9]{16,64}", token):
+        raise ValueError("ongeldig tijdelijk bestand-ID")
+
+    stem = SAFE_STEM_RE.sub("_", source_name[:-4]).strip(" ._-")
+    stem = stem[:80].rstrip(" ._-") or "subtitle"
+    return f"Kodi-{token[:12]}-{stem}.srt"
 
 
 def translated_name(source_path: str) -> str:

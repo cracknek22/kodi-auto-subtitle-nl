@@ -385,6 +385,94 @@ class VfsAndConfigurationTests(KodiServiceTestCase):
             self.service.snapshot(DEFAULT_FOLDER)
 
 
+class TempSubtitleStagingTests(KodiServiceTestCase):
+    def setUp(self):
+        super().setUp()
+        self.vfs.dirs.add(self.service.TEMP_PATH.rstrip("/"))
+
+    def test_stages_a_temp_srt_atomically_under_a_safe_unique_name(self):
+        source = f"{self.service.TEMP_PATH}Original.en.srt"
+        self.vfs.files[source] = "English subtitle"
+
+        with patch.object(
+            self.service.uuid,
+            "uuid4",
+            return_value=types.SimpleNamespace(hex="1234567890abcdef"),
+        ):
+            destination = self.service.stage_temp_subtitle(source, DEFAULT_FOLDER)
+
+        self.assertEqual(
+            destination,
+            f"{DEFAULT_FOLDER}Kodi-1234567890ab-Original.en.srt",
+        )
+        self.assertEqual(self.vfs.files[destination], "English subtitle")
+        temporary, renamed_to = self.vfs.renamed[-1]
+        self.assertEqual(renamed_to, destination)
+        self.assertTrue(temporary.startswith(f"{destination}."))
+        self.assertTrue(temporary.endswith(".tmp"))
+        self.assertNotIn(temporary, self.vfs.files)
+
+    def test_rejects_unsafe_oversized_or_colliding_temp_subtitles(self):
+        invalid = f"{self.service.TEMP_PATH}Movie.ass"
+        self.vfs.files[invalid] = "not an srt"
+        with self.assertRaisesRegex(ValueError, "SRT"):
+            self.service.stage_temp_subtitle(invalid, DEFAULT_FOLDER)
+
+        oversized = f"{self.service.TEMP_PATH}Huge.en.srt"
+        self.vfs.files[oversized] = "subtitle"
+        self.vfs.metadata[oversized] = (self.service.MAX_SUBTITLE_BYTES + 1, 1)
+        with self.assertRaisesRegex(ValueError, "groter dan 2 MB"):
+            self.service.stage_temp_subtitle(oversized, DEFAULT_FOLDER)
+
+        source = f"{self.service.TEMP_PATH}Movie.en.srt"
+        self.vfs.files[source] = "subtitle"
+        collision = f"{DEFAULT_FOLDER}Kodi-aaaaaaaaaaaa-Movie.en.srt"
+        self.vfs.files[collision] = "do not overwrite"
+        with (
+            patch.object(
+                self.service.uuid,
+                "uuid4",
+                return_value=types.SimpleNamespace(hex="a" * 32),
+            ),
+            self.assertRaisesRegex(OSError, "bestaat al"),
+        ):
+            self.service.stage_temp_subtitle(source, DEFAULT_FOLDER)
+        self.assertEqual(self.vfs.files[collision], "do not overwrite")
+
+    def test_cleans_partial_files_when_copy_or_rename_fails(self):
+        source = f"{self.service.TEMP_PATH}Movie.en.srt"
+        self.vfs.files[source] = "subtitle"
+
+        self.vfs.fail_copy = True
+        with (
+            patch.object(
+                self.service.uuid,
+                "uuid4",
+                return_value=types.SimpleNamespace(hex="b" * 32),
+            ),
+            self.assertRaisesRegex(OSError, "tijdelijke ondertitel"),
+        ):
+            self.service.stage_temp_subtitle(source, DEFAULT_FOLDER)
+        copy_temporary = self.vfs.copied[-1][1]
+        self.assertIn(copy_temporary, self.vfs.deleted)
+        self.assertNotIn(copy_temporary, self.vfs.files)
+
+        self.vfs.fail_copy = False
+        self.vfs.fail_rename = True
+        with (
+            patch.object(
+                self.service.uuid,
+                "uuid4",
+                return_value=types.SimpleNamespace(hex="c" * 32),
+            ),
+            self.assertRaisesRegex(OSError, "server opslaan"),
+        ):
+            self.service.stage_temp_subtitle(source, DEFAULT_FOLDER)
+        rename_temporary = self.vfs.renamed[-1][0]
+        self.assertIn(rename_temporary, self.vfs.deleted)
+        self.assertNotIn(rename_temporary, self.vfs.files)
+
+
 class PlayerAndConfirmationTests(KodiServiceTestCase):
     def test_player_helpers_handle_empty_and_runtime_failures(self):
         player = FakePlayer(video="movie.mkv", subtitle="", playing=True)
@@ -742,6 +830,61 @@ class MainLoopTests(KodiServiceTestCase):
         ]
         self.assertEqual(requests, [f"{source}.translate.request.json"])
         self.assertIn(self.service.JOBS_PATH, self.vfs.files)
+        self.assertEqual(len(self.dialog.yesno_calls), 1)
+
+    def test_main_stages_a_stable_kodi_temp_srt_and_starts_job(self):
+        temp_source = "special://temp/Original.en.srt"
+        self.vfs.files[temp_source] = (
+            "1\n00:00:01,000 --> 00:00:02,000\nTranslate this.\n"
+        )
+        self.vfs.metadata[temp_source] = (53, 100)
+        player = FakePlayer(video="plugin://movie/secret-token", playing=True)
+        self.service.xbmc.Player = lambda: player
+        self.service.xbmc.Monitor = lambda: SequenceMonitor([False, False, True])
+        remote_snapshots = iter([{}, {}, {}])
+        temp_snapshots = iter(
+            [
+                {},
+                {temp_source: (53, 100)},
+                {temp_source: (53, 100)},
+            ]
+        )
+        uuids = iter(
+            [
+                types.SimpleNamespace(hex="1111111111111111"),
+                types.SimpleNamespace(hex="2222222222222222"),
+                types.SimpleNamespace(hex="3333333333333333"),
+                types.SimpleNamespace(hex="4444444444444444"),
+            ]
+        )
+        self.dialog.yesno_result = True
+
+        with (
+            patch.object(
+                self.service,
+                "snapshot",
+                side_effect=lambda _folder: next(remote_snapshots),
+            ),
+            patch.object(
+                self.service,
+                "snapshot_kodi_temp",
+                side_effect=lambda: next(temp_snapshots),
+            ),
+            patch.object(
+                self.service.uuid,
+                "uuid4",
+                side_effect=lambda: next(uuids),
+            ),
+            patch.object(self.service, "poll_jobs", return_value=False),
+        ):
+            self.service.main()
+
+        staged = (
+            f"{DEFAULT_FOLDER}Kodi-111111111111-Original.en.srt"
+        )
+        self.assertIn(staged, self.vfs.files)
+        self.assertIn(f"{staged}.translate.request.json", self.vfs.files)
+        self.assertNotIn("secret-token", str(self.vfs.files))
         self.assertEqual(len(self.dialog.yesno_calls), 1)
 
     def test_main_marks_candidates_handled_when_dutch_is_already_active(self):

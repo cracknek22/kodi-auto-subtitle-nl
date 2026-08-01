@@ -18,6 +18,7 @@ from core import (  # noqa: E402
     is_dutch_subtitle,
     request_path,
     select_stable_candidate,
+    staged_subtitle_name,
     stable_candidates,
     status_path,
     translated_name,
@@ -81,6 +82,24 @@ class CandidateSelectionTests(unittest.TestCase):
 
 
 class JobProtocolTests(unittest.TestCase):
+    def test_builds_a_safe_unique_name_for_a_staged_kodi_subtitle(self):
+        self.assertEqual(
+            staged_subtitle_name(
+                "special://temp/[B]Movie: Final?.en.srt",
+                "abcdef1234567890",
+            ),
+            "Kodi-abcdef123456-B_Movie_ Final_.en.srt",
+        )
+        self.assertEqual(
+            staged_subtitle_name("special://temp/.....srt", "a" * 32),
+            "Kodi-aaaaaaaaaaaa-subtitle.srt",
+        )
+
+        with self.assertRaisesRegex(ValueError, "SRT"):
+            staged_subtitle_name("special://temp/Movie.ass", "a" * 32)
+        with self.assertRaisesRegex(ValueError, "tijdelijk bestand-ID"):
+            staged_subtitle_name("special://temp/Movie.srt", "../bad")
+
     def test_builds_safe_request_and_matching_paths(self):
         source = "smb://192.168.2.60/share/subtitles/Movie.en.srt"
         payload = build_request(

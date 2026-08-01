@@ -7,9 +7,12 @@ Nederlandse SRT zodra die klaar is.
 
 ## Wat gebeurt er?
 
-1. Kodi bewaart een nieuw gedownloade Engelse SRT in de ingestelde SMB-map.
+1. De add-on ziet een nieuw gekozen externe Engelse SRT in de ingestelde
+   SMB-map of in Kodi's tijdelijke map.
 2. De add-on toont de bestandsnaam en een korte tekstvoorvertoning.
-3. Alleen na **Ja** schrijft Kodi een bevestigde vertaalopdracht.
+3. Alleen na **Ja** wordt een tijdelijke Kodi-SRT onder een veilige, unieke
+   naam naar de SMB-map gekopieerd en schrijft Kodi een bevestigde
+   vertaalopdracht.
 4. De Radxa vertaalt de dialoog met GPT-5.6 Luna. Als Luna tijdelijk vol is,
    wordt GPT-5.6 Terra geprobeerd.
 5. De originele cue-nummers, tijdcodes, HTML/ASS-tags, witruimte en
@@ -21,7 +24,7 @@ alleen een SHA-256-vingerafdruk om te controleren of dezelfde video nog speelt.
 
 ## Kodi installeren
 
-1. Download `service.autosubtranslate.nl-0.1.0.zip` bij
+1. Download `service.autosubtranslate.nl-0.2.0.zip` bij
    [GitHub Releases](https://github.com/cracknek22/kodi-auto-subtitle-nl/releases).
 2. Zet in Kodi zo nodig **Instellingen → Systeem → Add-ons → Onbekende
    bronnen** aan.
@@ -40,19 +43,20 @@ wachtwoord; deze staan niet in de add-on of in deze repository.
 
 ## Gebruik
 
-Start een film of aflevering en download/kies een Engelse externe ondertitel.
-Zodra de SRT stabiel in de gecontroleerde map staat, verschijnt de
-bevestigingspopup. Kies **Nee** bij een verkeerde ondertitel en **Ja** om te
-vertalen. Bij meerdere nieuwe SRT's laat de add-on eerst kiezen welk bestand
-bedoeld is.
+Start een film of aflevering en download of kies een Engelse externe
+ondertitel. Zodra de SRT stabiel in de gecontroleerde SMB-map of Kodi's
+tijdelijke map staat, verschijnt de bevestigingspopup. Kies **Nee** bij een
+verkeerde ondertitel en **Ja** om te vertalen. Bij meerdere nieuwe SRT's laat
+de add-on eerst kiezen welk bestand bedoeld is.
 
 ## Belangrijke Kodi-beperking
 
-Kodi geeft add-ons niet het bestandspad van de actieve ondertitelstream. Daarom
-werkt de automatische popup betrouwbaar voor **nieuwe externe SRT-bestanden**
-die Kodi in de gecontroleerde map opslaat. Een al bestaand bestand dat niet
-opnieuw wordt opgeslagen en een ingebedde ondertiteltrack in een videobestand
-kunnen niet automatisch aan een bronbestand worden gekoppeld.
+Kodi geeft add-ons niet het bestandspad van de actieve ondertitelstream. Versie
+0.2.0 controleert daarom zowel de SMB-map als Kodi's tijdelijke map. Dit werkt
+voor **nieuwe externe SRT-bestanden** die Kodi als bestand beschikbaar maakt,
+ook wanneer de originele SRT bij de film hoort. Een ingebedde ondertiteltrack
+in een MKV of een stream die nooit als SRT-bestand wordt opgeslagen, kan niet
+automatisch worden vertaald.
 
 ## Radxa-service
 
@@ -105,5 +109,6 @@ python3 -m unittest discover -s tests -v
 ```
 
 De tests controleren onder meer exacte tijdcode- en opmaakbewaring,
-bevestigde opdrachten, padvalidatie, gestructureerde Codex-uitvoer,
-SMB-uitval en het voorkomen van afspeel-URL's in gedeelde opdrachten.
+bevestigde opdrachten, veilige Kodi-tempkopieën, padvalidatie, gestructureerde
+Codex-uitvoer, SMB-uitval en het voorkomen van afspeel-URL's in gedeelde
+opdrachten.
