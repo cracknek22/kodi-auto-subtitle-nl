@@ -41,6 +41,21 @@ alleen een SHA-256-vingerafdruk om te controleren of dezelfde video nog speelt.
 Gebruik bij het toevoegen van de SMB-bron je eigen Samba-gebruikersnaam en
 wachtwoord; deze staan niet in de add-on of in deze repository.
 
+## SMB-wachtwoord wijzigen
+
+De Radxa bewaart het Samba-wachtwoord in een afzonderlijk bestand met rechten
+`600`; het staat niet in `.env`, Compose-argumenten of deze repository. Kies
+het wachtwoord interactief via SSH:
+
+```text
+/home/radxa/smb-stack/change-smb-password.sh
+```
+
+Het wachtwoord moet 16 tot en met 64 tekens bevatten. Alle afdrukbare
+ASCII-leestekens zijn toegestaan; spaties en regeleinden niet. Het hulpmiddel
+test de nieuwe aanmelding en controleert dat het oude wachtwoord is geweigerd.
+Bij een fout wordt de vorige secret automatisch teruggezet en getest.
+
 ## Gebruik
 
 Start een film of aflevering en download of kies een Engelse externe

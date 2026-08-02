@@ -9,6 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "deploy" / "change-smb-password.sh"
+SECRET_APPLIER = ROOT / "deploy" / "apply-smb-password-secret.sh"
+SAMBA_ENTRYPOINT = ROOT / "deploy" / "samba-uid-entrypoint.sh"
+PUNCTUATED_PASSWORD = "Aa1!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~Z9"
 
 
 class ComposeDetectionTests(unittest.TestCase):
@@ -20,10 +23,15 @@ class ComposeDetectionTests(unittest.TestCase):
         self.bin = self.base / "bin"
         self.stack.mkdir()
         self.bin.mkdir()
+        self.write_command("sleep", "exit 0")
         (self.stack / ".env").write_text(
-            "SMB_USER=smbuser\nSMB_PASSWORD=unit-test-secret\n",
+            "SMB_USER=smbuser\nPUID=1000\nPGID=1000\n",
             encoding="utf-8",
         )
+        self.secret = self.stack / "secrets" / "smb_password"
+        self.secret.parent.mkdir(mode=0o700)
+        self.secret.write_text("unit-test-secret", encoding="utf-8")
+        self.secret.chmod(0o600)
 
     def write_command(self, name: str, body: str) -> None:
         path = self.bin / name
@@ -34,6 +42,7 @@ class ComposeDetectionTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PATH"] = f"{self.bin}:/usr/bin:/bin"
         environment["SMB_PASSWORD_STACK_DIR"] = str(self.stack)
+        environment["SMB_PASSWORD_WAIT_ATTEMPTS"] = "3"
         return subprocess.run(
             ["sh", str(HELPER), "--check"],
             capture_output=True,
@@ -155,29 +164,27 @@ exit 93
             "docker",
             """
 if [ "$1 $2" = "compose version" ]; then exit 1; fi
-if [ "$1" = "inspect" ]; then echo healthy; exit 0; fi
+if [ "$1" = "inspect" ]; then echo starting; exit 0; fi
 if [ "$1 $2 $3 $4 $5 $6" = "exec -i smb-server smbclient -A /dev/stdin" ]; then
     input="$(cat)"
     case "$input" in
-        *"password = NewPassword123456"*) exit 0 ;;
         *"password = unit-test-secret"*) exit 1 ;;
+        *) exit 0 ;;
     esac
 fi
 exit 95
 """.strip(),
         )
 
-        result = self.run_interactive("NewPassword123456")
+        result = self.run_interactive(PUNCTUATED_PASSWORD)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("gewijzigd en getest", result.stdout)
-        self.assertIn(
-            "SMB_PASSWORD=NewPassword123456",
-            (self.stack / ".env").read_text(encoding="utf-8"),
-        )
-        self.assertNotIn("NewPassword123456", result.stdout + result.stderr)
+        self.assertEqual(self.secret.read_text(encoding="utf-8"), PUNCTUATED_PASSWORD)
+        self.assertNotIn("SMB_PASSWORD", (self.stack / ".env").read_text(encoding="utf-8"))
+        self.assertNotIn(PUNCTUATED_PASSWORD, result.stdout + result.stderr)
 
-    def test_rejects_compose_sensitive_characters_before_recreating(self):
+    def test_rejects_spaces_and_control_characters_before_recreating(self):
         self.write_command(
             "docker",
             """
@@ -189,15 +196,12 @@ exit 97
         )
         self.write_working_compose()
 
-        result = self.run_interactive("Bad+Password12345")
+        result = self.run_interactive("Bad Password12345")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("letters, cijfers", result.stderr)
-        self.assertIn(
-            "SMB_PASSWORD=unit-test-secret",
-            (self.stack / ".env").read_text(encoding="utf-8"),
-        )
-        self.assertNotIn("Bad+Password12345", result.stdout + result.stderr)
+        self.assertIn("spaties", result.stderr)
+        self.assertEqual(self.secret.read_text(encoding="utf-8"), "unit-test-secret")
+        self.assertNotIn("Bad Password12345", result.stdout + result.stderr)
 
     def test_reports_when_samba_rejects_the_new_password(self):
         self.write_working_compose()
@@ -216,10 +220,61 @@ exit 96
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("nieuwe wachtwoord", result.stderr)
         self.assertIn("niet geaccepteerd", result.stderr)
-        self.assertIn(
-            "SMB_PASSWORD=unit-test-secret",
-            (self.stack / ".env").read_text(encoding="utf-8"),
+        self.assertEqual(self.secret.read_text(encoding="utf-8"), "unit-test-secret")
+
+
+class SecretApplierTests(unittest.TestCase):
+    def test_passes_punctuation_only_through_stdin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            secret = base / "smb_password"
+            recorded_stdin = base / "stdin"
+            recorded_args = base / "args"
+            fake_smbpasswd = base / "smbpasswd"
+            secret.write_text(PUNCTUATED_PASSWORD, encoding="utf-8")
+            secret.chmod(0o600)
+            fake_smbpasswd.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RECORDED_ARGS\"\n"
+                "cat > \"$RECORDED_STDIN\"\n",
+                encoding="utf-8",
+            )
+            fake_smbpasswd.chmod(0o700)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "SMB_PASSWORD_FILE": str(secret),
+                    "SMB_PASSWD_BIN": str(fake_smbpasswd),
+                    "SMB_USER": "smbuser",
+                    "RECORDED_ARGS": str(recorded_args),
+                    "RECORDED_STDIN": str(recorded_stdin),
+                }
+            )
+
+            result = subprocess.run(
+                ["sh", str(SECRET_APPLIER)],
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(recorded_args.read_text(encoding="utf-8"), "-s\n-a\nsmbuser\n")
+            self.assertEqual(
+                recorded_stdin.read_text(encoding="utf-8"),
+                f"{PUNCTUATED_PASSWORD}\n{PUNCTUATED_PASSWORD}\n",
+            )
+            self.assertNotIn(PUNCTUATED_PASSWORD, result.stdout + result.stderr)
+
+    def test_entrypoint_applies_secret_before_starting_samba(self):
+        content = SAMBA_ENTRYPOINT.read_text(encoding="utf-8")
+
+        apply_index = content.index(
+            "/usr/local/bin/apply-smb-password-secret.sh"
         )
+        samba_index = content.index('exec /usr/bin/samba.sh "$@"')
+        self.assertLess(apply_index, samba_index)
+        self.assertNotIn("SMB_PASSWORD", content)
 
 
 if __name__ == "__main__":

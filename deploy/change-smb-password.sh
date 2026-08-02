@@ -3,7 +3,20 @@ set -eu
 
 STACK_DIR="${SMB_PASSWORD_STACK_DIR:-/home/radxa/smb-stack}"
 ENV_FILE="$STACK_DIR/.env"
+PASSWORD_FILE="${SMB_PASSWORD_FILE:-$STACK_DIR/secrets/smb_password}"
 COMPOSE_SERVICE="${SMB_PASSWORD_COMPOSE_SERVICE:-samba}"
+WAIT_ATTEMPTS="${SMB_PASSWORD_WAIT_ATTEMPTS:-90}"
+
+case "$WAIT_ATTEMPTS" in
+    ""|*[!0-9]*)
+        echo "Ongeldige wachttijd voor de SMB-controle." >&2
+        exit 1
+        ;;
+esac
+if [ "$WAIT_ATTEMPTS" -lt 1 ] || [ "$WAIT_ATTEMPTS" -gt 300 ]; then
+    echo "Ongeldige wachttijd voor de SMB-controle." >&2
+    exit 1
+fi
 
 detect_compose() {
     if docker compose version >/dev/null 2>&1; then
@@ -51,6 +64,10 @@ validate_compose() {
         echo "Compose-service $COMPOSE_SERVICE is niet gevonden." >&2
         return 1
     fi
+    if [ ! -f "$PASSWORD_FILE" ] || [ ! -r "$PASSWORD_FILE" ]; then
+        echo "Beveiligd SMB-wachtwoordbestand is niet gevonden." >&2
+        return 1
+    fi
 }
 
 validate_compose
@@ -77,9 +94,9 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-old_password="$(sed -n 's/^SMB_PASSWORD=//p' "$ENV_FILE" | head -n 1)"
+old_password="$(cat "$PASSWORD_FILE")"
 if [ -z "$old_password" ]; then
-    echo "Huidig SMB-wachtwoord ontbreekt in de configuratie." >&2
+    echo "Huidig SMB-wachtwoord ontbreekt in het beveiligde bestand." >&2
     exit 1
 fi
 
@@ -113,15 +130,15 @@ if [ "${#password}" -lt 16 ] || [ "${#password}" -gt 64 ]; then
     echo "Gebruik 16 tot en met 64 tekens." >&2
     exit 1
 fi
-if ! printf '%s' "$password" | grep -Eq '^[A-Za-z0-9_@.-]+$'; then
-    echo "Gebruik alleen letters, cijfers en _ @ . -" >&2
+if ! printf '%s\n' "$password" | LC_ALL=C grep -Eq '^[!-~]+$'; then
+    echo "Gebruik normale ASCII-tekens zonder spaties of regeleinden." >&2
     exit 1
 fi
 
 umask 077
 timestamp="$(date +%Y%m%d-%H%M%S)"
-backup="$ENV_FILE.backup-$timestamp"
-temporary="$(mktemp "$ENV_FILE.new.XXXXXX")"
+backup="$PASSWORD_FILE.backup-$timestamp"
+temporary="$(mktemp "$PASSWORD_FILE.new.XXXXXX")"
 auth_file="$(mktemp /tmp/smb-auth.XXXXXX)"
 old_auth_file="$(mktemp /tmp/smb-old-auth.XXXXXX)"
 
@@ -131,33 +148,41 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-cp -p "$ENV_FILE" "$backup"
-chmod 600 "$backup"
+test_smb_auth() {
+    docker exec -i smb-server \
+        smbclient -A /dev/stdin //127.0.0.1/share -m SMB3 -c ls \
+        < "$1" >/dev/null 2>&1
+}
 
-found_password=0
-while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-        SMB_PASSWORD=*)
-            printf 'SMB_PASSWORD=%s\n' "$password" >> "$temporary"
-            found_password=1
-            ;;
-        *)
-            printf '%s\n' "$line" >> "$temporary"
-            ;;
-    esac
-done < "$ENV_FILE"
-if [ "$found_password" -ne 1 ]; then
-    printf 'SMB_PASSWORD=%s\n' "$password" >> "$temporary"
-fi
+cp -p "$PASSWORD_FILE" "$backup"
+chmod 600 "$backup"
+printf '%s' "$password" > "$temporary"
 chmod 600 "$temporary"
-mv "$temporary" "$ENV_FILE"
+mv "$temporary" "$PASSWORD_FILE"
+printf 'username = smbuser\npassword = %s\n' "$password" > "$auth_file"
+printf 'username = smbuser\npassword = %s\n' "$old_password" > "$old_auth_file"
+chmod 600 "$auth_file" "$old_auth_file"
 
 rollback() {
     reason="$1"
-    cp -p "$backup" "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
+    cp -p "$backup" "$PASSWORD_FILE"
+    chmod 600 "$PASSWORD_FILE"
     if (cd "$STACK_DIR" && run_compose up -d --force-recreate "$COMPOSE_SERVICE" >/dev/null); then
-        echo "$reason Het oude wachtwoord is hersteld." >&2
+        restored=0
+        restore_attempt=0
+        while [ "$restore_attempt" -lt "$WAIT_ATTEMPTS" ]; do
+            if test_smb_auth "$old_auth_file"; then
+                restored=1
+                break
+            fi
+            restore_attempt=$((restore_attempt + 1))
+            sleep 1
+        done
+        if [ "$restored" -eq 1 ]; then
+            echo "$reason Het oude wachtwoord is hersteld en getest." >&2
+        else
+            echo "$reason De oude configuratie is hersteld, maar de aanmelding kon nog niet worden bevestigd." >&2
+        fi
     else
         echo "$reason De oude configuratie is hersteld, maar Samba kon niet automatisch worden herstart." >&2
     fi
@@ -168,34 +193,20 @@ if ! (cd "$STACK_DIR" && run_compose up -d --force-recreate "$COMPOSE_SERVICE" >
     rollback "Samba kon niet met de nieuwe configuratie worden gestart."
 fi
 
-healthy=0
+ready=0
 attempt=0
-while [ "$attempt" -lt 30 ]; do
-    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' smb-server 2>/dev/null || true)"
-    if [ "$health" = "healthy" ] || [ "$health" = "running" ]; then
-        healthy=1
+while [ "$attempt" -lt "$WAIT_ATTEMPTS" ]; do
+    if test_smb_auth "$auth_file"; then
+        ready=1
         break
     fi
     attempt=$((attempt + 1))
     sleep 1
 done
-if [ "$healthy" -ne 1 ]; then
-    rollback "Samba werd niet op tijd gezond met de nieuwe configuratie."
+if [ "$ready" -ne 1 ]; then
+    rollback "Het nieuwe wachtwoord werd door Samba niet geaccepteerd binnen de wachttijd."
 fi
 
-printf 'username = smbuser\npassword = %s\n' "$password" > "$auth_file"
-printf 'username = smbuser\npassword = %s\n' "$old_password" > "$old_auth_file"
-chmod 600 "$auth_file" "$old_auth_file"
-
-test_smb_auth() {
-    docker exec -i smb-server \
-        smbclient -A /dev/stdin //127.0.0.1/share -m SMB3 -c ls \
-        < "$1" >/dev/null 2>&1
-}
-
-if ! test_smb_auth "$auth_file"; then
-    rollback "Het nieuwe wachtwoord werd door Samba niet geaccepteerd."
-fi
 if test_smb_auth "$old_auth_file"; then
     rollback "Het oude wachtwoord werd na de wijziging nog geaccepteerd."
 fi
