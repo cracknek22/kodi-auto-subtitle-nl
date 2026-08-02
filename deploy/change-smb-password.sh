@@ -113,8 +113,8 @@ if [ "${#password}" -lt 16 ] || [ "${#password}" -gt 64 ]; then
     echo "Gebruik 16 tot en met 64 tekens." >&2
     exit 1
 fi
-if ! printf '%s' "$password" | grep -Eq '^[A-Za-z0-9_@%+=:,.!-]+$'; then
-    echo "Gebruik alleen letters, cijfers en _ @ % + = : , . ! -" >&2
+if ! printf '%s' "$password" | grep -Eq '^[A-Za-z0-9_@.-]+$'; then
+    echo "Gebruik alleen letters, cijfers en _ @ . -" >&2
     exit 1
 fi
 
@@ -153,18 +153,19 @@ chmod 600 "$temporary"
 mv "$temporary" "$ENV_FILE"
 
 rollback() {
+    reason="$1"
     cp -p "$backup" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
     if (cd "$STACK_DIR" && run_compose up -d --force-recreate "$COMPOSE_SERVICE" >/dev/null); then
-        echo "Wijziging mislukt; het oude wachtwoord is hersteld." >&2
+        echo "$reason Het oude wachtwoord is hersteld." >&2
     else
-        echo "Wijziging mislukt. De oude configuratie is hersteld, maar Samba kon niet automatisch worden herstart." >&2
+        echo "$reason De oude configuratie is hersteld, maar Samba kon niet automatisch worden herstart." >&2
     fi
     exit 1
 }
 
 if ! (cd "$STACK_DIR" && run_compose up -d --force-recreate "$COMPOSE_SERVICE" >/dev/null); then
-    rollback
+    rollback "Samba kon niet met de nieuwe configuratie worden gestart."
 fi
 
 healthy=0
@@ -179,7 +180,7 @@ while [ "$attempt" -lt 30 ]; do
     sleep 1
 done
 if [ "$healthy" -ne 1 ]; then
-    rollback
+    rollback "Samba werd niet op tijd gezond met de nieuwe configuratie."
 fi
 
 printf 'username = smbuser\npassword = %s\n' "$password" > "$auth_file"
@@ -187,21 +188,16 @@ printf 'username = smbuser\npassword = %s\n' "$old_password" > "$old_auth_file"
 chmod 600 "$auth_file" "$old_auth_file"
 
 test_smb_auth() {
-    docker exec -i smb-server sh -c '
-        set -eu
-        container_auth="$(mktemp /tmp/smb-auth.XXXXXX)"
-        trap '\''rm -f "$container_auth"'\'' EXIT HUP INT TERM
-        chmod 600 "$container_auth"
-        cat > "$container_auth"
-        smbclient -A "$container_auth" //127.0.0.1/share -m SMB3 -c "ls" >/dev/null 2>&1
-    ' < "$1"
+    docker exec -i smb-server \
+        smbclient -A /dev/stdin //127.0.0.1/share -m SMB3 -c ls \
+        < "$1" >/dev/null 2>&1
 }
 
 if ! test_smb_auth "$auth_file"; then
-    rollback
+    rollback "Het nieuwe wachtwoord werd door Samba niet geaccepteerd."
 fi
 if test_smb_auth "$old_auth_file"; then
-    rollback
+    rollback "Het oude wachtwoord werd na de wijziging nog geaccepteerd."
 fi
 
 password=""
