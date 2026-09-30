@@ -24,5 +24,30 @@
         </setting>
       </group>
     </category>
+    <category id="sync" label="32005" help="32007">
+      <group id="1">
+        <setting id="sync_enabled" type="boolean" label="32006" help="32007">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="sync_server" type="string" label="32008" help="32009">
+          <level>0</level>
+          <default>https://192.168.2.60:8766</default>
+          <constraints><allowempty>false</allowempty></constraints>
+          <control type="edit" format="string"/>
+        </setting>
+        <setting id="sync_cert_sha256" type="string" label="32010" help="32011">
+          <level>0</level>
+          <default></default>
+          <control type="edit" format="string"/>
+        </setting>
+        <setting id="sync_token" type="string" label="32012" help="32013">
+          <level>0</level>
+          <default></default>
+          <control type="edit" format="string"><hidden>true</hidden></control>
+        </setting>
+      </group>
+    </category>
   </section>
 </settings>

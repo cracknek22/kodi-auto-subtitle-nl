@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="service.autosubtranslate.nl"
        name="Automatische Nederlandse Ondertitels"
-       version="0.3.0"
+       version="0.4.0"
        provider-name="cracknek22">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
@@ -11,8 +11,8 @@
   <extension point="xbmc.addon.metadata">
     <summary lang="nl_NL">Bevestig en vertaal Engelse SRT-ondertitels automatisch naar Nederlands.</summary>
     <summary lang="en_GB">Confirm and translate English SRT subtitles automatically to Dutch.</summary>
-    <description lang="nl_NL">Zoekt automatisch een Engelse SRT via de officiële OpenSubtitles.com-add-on en toont eerst een voorbeeld ter bevestiging. Alleen na Ja vertaalt de Radxa de ondertitel, met behoud van alle originele tijdstempels. Handmatige downloads via de SMB-map en Kodi-tempmap blijven mogelijk.</description>
-    <description lang="en_GB">Automatically finds an English SRT through the official OpenSubtitles.com add-on and asks for confirmation with a preview. Only after Yes does the Radxa translate it, preserving every timestamp. Manual downloads through the SMB and Kodi temporary folders remain supported.</description>
+    <description lang="nl_NL">Zoekt automatisch een Engelse SRT via de officiële OpenSubtitles.com-add-on en toont eerst een voorbeeld ter bevestiging. Alleen na Ja vertaalt de Radxa de ondertitel. Optioneel synchroniseert de Radxa eerst met de filmaudio via een beveiligde verbinding; de vertaling behoudt daarna de tijdcodes. Synchronisatie staat uit totdat de server is ingesteld. Handmatige downloads via SMB en Kodi-temp blijven mogelijk.</description>
+    <description lang="en_GB">Automatically finds an English SRT through the official OpenSubtitles.com add-on and asks for confirmation with a preview. Only after Yes does the Radxa translate it. Optional audio synchronization uses a secure Radxa connection before translation, which then preserves the resulting timestamps. Synchronization is disabled until the server is configured. Manual SMB and Kodi temporary downloads remain supported.</description>
     <platform>all</platform>
     <license>MIT</license>
     <source>https://github.com/cracknek22/kodi-auto-subtitle-nl</source>

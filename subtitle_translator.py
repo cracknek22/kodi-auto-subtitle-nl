@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
+import stat
 import tempfile
 import time
 from dataclasses import dataclass
@@ -219,13 +221,24 @@ def _atomic_write_text(path: Path, content: str) -> None:
 def process_file(
     source: Path,
     translate: Callable[[Sequence[str]], Sequence[str]],
+    *,
+    source_content: str | None = None,
+    batch_size: int | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> Path:
     output = output_path_for(source)
     if output is None:
         raise ValueError(f"{source.name} is geen Engelse bron-SRT")
 
-    document = parse_srt(_read_subtitle(source))
-    translations = list(translate(document.translatable_texts()))
+    document = parse_srt(_read_subtitle(source) if source_content is None else source_content)
+    texts = document.translatable_texts()
+    effective_batch_size = len(texts) if batch_size is None else max(1, batch_size)
+    translations: list[str] = []
+    for start in range(0, len(texts), effective_batch_size):
+        batch = texts[start : start + effective_batch_size]
+        translations.extend(translate(batch))
+        if progress is not None:
+            progress(min(start + len(batch), len(texts)), len(texts))
     rendered = render_srt(document, translations)
     if len(rendered.encode("utf-8")) > MAX_SUBTITLE_BYTES:
         raise ValueError("vertaalde ondertitel is groter dan 2 MB")
@@ -497,10 +510,18 @@ class ConfirmedJobScanner:
         translate: Callable[[Sequence[str]], Sequence[str]],
         *,
         max_subtitle_bytes: int = MAX_SUBTITLE_BYTES,
+        translation_batch_size: int = 250,
+        synchronizer=None,
+        reference_store=None,
+        reference_proxy_factory=None,
     ) -> None:
         self.watch_dir = watch_dir
         self.translate = translate
         self.max_subtitle_bytes = max_subtitle_bytes
+        self.translation_batch_size = max(1, translation_batch_size)
+        self.synchronizer = synchronizer
+        self.reference_store = reference_store
+        self.reference_proxy_factory = reference_proxy_factory
         self._observed: dict[Path, tuple[int, int]] = {}
 
     @staticmethod
@@ -518,11 +539,18 @@ class ConfirmedJobScanner:
             raise ValueError("vertaalaanvraag is te groot")
 
         payload = json.loads(request.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or payload.get("version") != 1:
+        if not isinstance(payload, dict) or type(payload.get("version")) is not int or payload.get("version") not in {1, 2}:
             raise ValueError("ongeldige vertaalaanvraag")
-        if not set(payload).issubset(
-            {"version", "job_id", "source", "requested_at"}
-        ):
+        allowed = {"version", "job_id", "source", "requested_at"}
+        if payload["version"] == 2:
+            allowed.add("sync")
+            sync = payload.get("sync")
+            if (not isinstance(sync, dict) or set(sync) != {"required", "source_sha256"}
+                    or sync.get("required") is not True
+                    or not isinstance(sync.get("source_sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", sync["source_sha256"])):
+                raise ValueError("ongeldige synchronisatieaanvraag")
+        if not set(payload).issubset(allowed):
             raise ValueError("ongeldige vertaalaanvraag")
 
         job_id = payload.get("job_id")
@@ -553,6 +581,29 @@ class ConfirmedJobScanner:
 
         return source
 
+    def _synchronize_source(self, source: Path, payload: dict):
+        if any(part is None for part in (
+            self.synchronizer, self.reference_store, self.reference_proxy_factory,
+        )):
+            raise ValueError("Synchronisatie is niet op de server ingesteld.")
+        # Freeze the approved source outside SMB before any network/worker call.
+        # Neither an SMB writer nor the synchronizer may replace the original.
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("De bevestigde ondertitel is geen regulier bestand.")
+            raw = handle.read(self.max_subtitle_bytes + 1)
+        digest = hashlib.sha256(raw).hexdigest()
+        if len(raw) > self.max_subtitle_bytes or digest != payload["sync"]["source_sha256"]:
+            raise ValueError("De bevestigde ondertitel is gewijzigd.")
+        reference = self.reference_store.consume(payload["job_id"], source.name, digest)
+        with tempfile.TemporaryDirectory(prefix="subtitle-sync-source-") as temporary:
+            private_source = Path(temporary) / source.name
+            private_source.write_bytes(raw)
+            private_source.chmod(0o600)
+            with self.reference_proxy_factory(reference) as proxy:
+                return self.synchronizer.synchronize(private_source, proxy.url)
+
     @staticmethod
     def _existing_status(status_path: Path) -> dict | None:
         if not status_path.exists():
@@ -567,7 +618,11 @@ class ConfirmedJobScanner:
         processed: list[Path] = []
         current_requests: set[Path] = set()
 
-        for request in sorted(self.watch_dir.rglob(f"*{REQUEST_SUFFIX}")):
+        requests = sorted(
+            self.watch_dir.rglob(f"*{REQUEST_SUFFIX}"),
+            key=lambda path: (path.stat().st_mtime_ns, str(path)),
+        )
+        for request in requests:
             current_requests.add(request)
             signature = self._signature(request)
             if self._observed.get(request) != signature:
@@ -587,24 +642,33 @@ class ConfirmedJobScanner:
                 ):
                     continue
                 source = self._load_source(request, payload)
+                common_status = {
+                    "version": payload["version"], "job_id": job_id, "source": source.name,
+                }
+                source_content = None
+                if payload["version"] == 2:
+                    _atomic_write_json(status_path, {**common_status, "state": "syncing"})
+                    result = self._synchronize_source(source, payload)
+                    source_content = result.content
+                    common_status["sync"] = {
+                        "state": "complete", "offset_seconds": result.offset_seconds,
+                        "scale_factor": result.scale_factor,
+                    }
+                _atomic_write_json(status_path, {**common_status, "state": "processing", "progress": 0})
 
-                _atomic_write_json(
-                    status_path,
-                    {
-                        "version": 1,
-                        "job_id": job_id,
-                        "state": "processing",
-                        "source": source.name,
-                    },
+                def report_progress(done: int, total: int) -> None:
+                    percent = max(0, min(100, int(done * 100 / total))) if total else 0
+                    _atomic_write_json(status_path, {**common_status, "state": "processing", "progress": percent})
+
+                translated = process_file(
+                    source, self.translate, source_content=source_content,
+                    batch_size=self.translation_batch_size, progress=report_progress,
                 )
-                translated = process_file(source, self.translate)
                 _atomic_write_json(
                     status_path,
                     {
-                        "version": 1,
-                        "job_id": job_id,
+                        **common_status,
                         "state": "complete",
-                        "source": source.name,
                         "output": translated.name,
                     },
                 )
@@ -613,13 +677,19 @@ class ConfirmedJobScanner:
                 _atomic_write_json(
                     status_path,
                     {
-                        "version": 1,
+                        "version": 2 if payload.get("version") == 2 else 1,
                         "job_id": job_id,
                         "state": "failed",
-                        "message": self._safe_message(exc),
+                        "message": (
+                            "Synchronisatie of vertaling mislukt. Controleer de koppeling en probeer opnieuw."
+                            if payload.get("version") == 2 else self._safe_message(exc)
+                        ),
                     },
                 )
-                LOGGER.exception("Bevestigde vertaalaanvraag mislukt: %s", request)
+                if payload.get("version") == 2:
+                    LOGGER.warning("Bevestigde synchronisatie/vertaling mislukt (%s)", type(exc).__name__)
+                else:
+                    LOGGER.exception("Bevestigde vertaalaanvraag mislukt: %s", request)
                 continue
 
             LOGGER.info("Bevestigde vertaling gereed: %s", translated.name)
@@ -661,16 +731,54 @@ def main() -> None:
             )
         ),
     )
-    scanner = ConfirmedJobScanner(watch_dir, translator)
+    sync_server = None
+    sync_options = {}
+    if os.environ.get("SYNC_ENABLED", "false").lower() == "true":
+        from media_proxy import MediaProxy
+        from subtitle_sync import SubtitleSynchronizer
+        from sync_reference import ReferenceStore, start_reference_server
+
+        allowed_hosts = tuple(
+            value.strip() for value in os.environ.get("SYNC_ALLOWED_HOSTS", "").split(",")
+            if value.strip()
+        )
+        if not allowed_hosts:
+            raise ValueError("Stel SYNC_ALLOWED_HOSTS expliciet in voor je mediabronnen.")
+        references = ReferenceStore(allowed_hosts, ttl_seconds=3600)
+        sync_server = start_reference_server(
+            references,
+            os.environ.get("SYNC_BIND", "127.0.0.1"),
+            int(os.environ.get("SYNC_PORT", "8766")),
+            Path(os.environ["SYNC_CERT_FILE"]), Path(os.environ["SYNC_KEY_FILE"]),
+            Path(os.environ["SYNC_TOKEN_FILE"]),
+        )
+        sync_options = {
+            "synchronizer": SubtitleSynchronizer(
+                timeout=float(os.environ.get("SYNC_TIMEOUT", "300")),
+                python_binary=os.environ.get("SYNC_PYTHON", "/usr/bin/python3"),
+            ),
+            "reference_store": references,
+            "reference_proxy_factory": lambda reference: MediaProxy(reference, allowed_hosts),
+        }
+    scanner = ConfirmedJobScanner(
+        watch_dir, translator,
+        translation_batch_size=int(os.environ.get("TRANSLATION_BATCH_SIZE", "250")),
+        **sync_options,
+    )
 
     LOGGER.info(
         "Bevestigde ondertitelvertaler gestart: %s -> Nederlands via %s",
         watch_dir,
         translator.model,
     )
-    while True:
-        scanner.scan_once()
-        time.sleep(poll_seconds)
+    try:
+        while True:
+            scanner.scan_once()
+            time.sleep(poll_seconds)
+    finally:
+        if sync_server is not None:
+            sync_server.shutdown()
+            sync_server.server_close()
 
 
 if __name__ == "__main__":

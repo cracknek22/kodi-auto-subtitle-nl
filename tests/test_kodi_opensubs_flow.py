@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from unittest.mock import patch
@@ -44,6 +45,28 @@ class OpenSubtitlesFlowTests(KodiServiceTestCase):
 
     def request_files(self):
         return [p for p in self.vfs.files if p.endswith(".translate.request.json")]
+
+    def test_confirmed_opensubs_file_uses_secure_sync_with_original_byte_hash(self):
+        self.service.ADDON.getSettingBool = lambda key: key == "sync_enabled"
+        raw = b"\xef\xbb\xbf" + self.content.encode("utf-8")
+        self.vfs.files[self.source] = raw
+        def register(_server, _pin, _token, payload):
+            self.assertEqual(len(self.dialog.yesno_calls), 1)
+            self.assertEqual(payload["source_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertFalse(self.request_files())
+        with patch.object(self.service.sync_client, "register_reference", side_effect=register) as registration:
+            self.run_search()
+        registration.assert_called_once()
+        self.assertEqual(json.loads(self.vfs.files[self.request_files()[0]])["version"], 2)
+        self.assertNotIn("private", str(self.vfs.files))
+
+    def test_sync_registration_error_is_visible_and_never_falls_back(self):
+        self.service.ADDON.getSettingBool = lambda key: key == "sync_enabled"
+        with patch.object(self.service.sync_client, "register_reference", side_effect=self.service.sync_client.SyncError("Beveiligde synchronisatie mislukt.")):
+            self.run_search()
+        self.assertFalse(self.request_files())
+        self.assertIn("synchronisatie", self.dialog.notifications[-1][0][1])
+        self.assertFalse([p for p in self.vfs.files if p.startswith(DEFAULT_FOLDER)])
 
     def test_yes_submits_original_srt_once_with_preview_and_no_video_url(self):
         self.run_search()

@@ -1,0 +1,2 @@
+# Optional server-side synchronization. Uses WebRTC VAD, not Torch or Whisper.
+ffsubsync==0.5.1

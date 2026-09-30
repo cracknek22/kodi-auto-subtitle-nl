@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,7 @@ from core import (  # noqa: E402
     video_fingerprint,
 )
 import opensubs  # noqa: E402
+import sync_client  # noqa: E402
 
 
 MAX_SUBTITLE_BYTES = 2 * 1024 * 1024
@@ -82,6 +84,24 @@ def read_text(path: str) -> str:
     if isinstance(content, bytes):
         return content.decode("utf-8-sig")
     return content[1:] if content.startswith("\ufeff") else content
+
+
+def read_subtitle_bytes(path: str) -> bytes:
+    """Read the same raw bytes the Radxa hashes, including BOM and CRLF."""
+    if xbmcvfs.Stat(path).st_size() > MAX_SUBTITLE_BYTES:
+        raise ValueError("Ondertitel is groter dan 2 MB.")
+    handle = xbmcvfs.File(path, "r")
+    try:
+        raw = bytes(handle.readBytes(MAX_SUBTITLE_BYTES + 1))
+    finally:
+        handle.close()
+    if not raw or len(raw) > MAX_SUBTITLE_BYTES:
+        raise ValueError("De ondertitel is leeg of groter dan 2 MB.")
+    return raw
+
+
+def subtitle_sha256(path: str) -> str:
+    return hashlib.sha256(read_subtitle_bytes(path)).hexdigest()
 
 
 def write_text(path: str, content: str) -> None:
@@ -214,11 +234,16 @@ def ask_yes_no(
 ) -> bool:
     heading = f"Video: {safe_label(video_title)}\n" if video_title else ""
     source_label = "Gevonden ondertitel" if video_title else "Actieve ondertitel"
+    question = (
+        "Deze ondertitel eerst met de filmaudio synchroniseren en daarna naar natuurlijk Nederlands vertalen?"
+        if ADDON.getSettingBool("sync_enabled")
+        else "Deze ondertitel naar natuurlijk Nederlands vertalen?"
+    )
     message = (
         f"{heading}Bestand: {safe_label(filename)}\n"
         f"{source_label}: {safe_label(stream)}\n\n"
         f"Voorbeeld: {safe_label(preview)}\n\n"
-        "Deze ondertitel naar natuurlijk Nederlands vertalen?"
+        f"{question}"
     )
     dialog = xbmcgui.Dialog()
     try:
@@ -307,7 +332,9 @@ def search_opensubs(player, folder, jobs, baseline) -> None:
         size = int(xbmcvfs.Stat(source).st_size())
         if not 0 < size <= MAX_SUBTITLE_BYTES:
             raise ValueError("invalid subtitle size")
-        content = read_text(source)
+        raw = read_subtitle_bytes(source)
+        approved_sha256 = hashlib.sha256(raw).hexdigest()
+        content = raw.decode("utf-8-sig")
         if not re.search(
             r"(?m)^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}", content,
         ):
@@ -321,16 +348,22 @@ def search_opensubs(player, folder, jobs, baseline) -> None:
             return
         # The provider can clean/replace its temp files during a manual download.
         # Never translate different content from the preview the user approved.
-        if read_text(source) != content:
+        if subtitle_sha256(source) != approved_sha256:
             raise ValueError("subtitle changed during confirmation")
         staged = stage_temp_subtitle(source, folder)
         stat = xbmcvfs.Stat(staged)
         baseline[staged] = (int(stat.st_size()), int(stat.st_mtime()))
-        if read_text(staged) != content:
+        if subtitle_sha256(staged) != approved_sha256:
             raise ValueError("subtitle changed during copy")
         if still_playing():
-            start_job(staged, identity[0], jobs)
+            start_job(
+                staged, identity[0], jobs, player=player,
+                approved_sha256=approved_sha256, expected_identity=identity,
+            )
             submitted = True
+    except sync_client.SyncError as exc:
+        log("Beveiligde synchronisatie niet gestart", xbmc.LOGWARNING)
+        notify_opensubs(str(exc))
     except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
         # VFS/provider exceptions can contain account or stream URLs.
         log(f"OpenSubtitles ophalen mislukt ({type(exc).__name__})", xbmc.LOGWARNING)
@@ -410,25 +443,63 @@ def start_job(
     source: str,
     playing_video_fingerprint: str,
     jobs: dict[str, dict],
+    player: xbmc.Player | None = None,
+    approved_sha256: str | None = None,
+    expected_identity: tuple[str, int] | None = None,
 ) -> None:
+    synchronized = ADDON.getSettingBool("sync_enabled")
+    identity = expected_identity or (playback_identity(player) if player is not None else None)
+
+    def validate_approval():
+        if player is not None:
+            # HTTPS and dialogs can queue Kodi Player callbacks. Process a stop
+            # or restart even when getPlayingFile() still returns the same URL.
+            xbmc.sleep(1)
+            if playback_identity(player) != identity or not identity[0] or identity[0] != playing_video_fingerprint:
+                raise sync_client.SyncError("De video is veranderd; bevestig de ondertitel opnieuw.")
+        if approved_sha256 is not None and subtitle_sha256(source) != approved_sha256:
+            raise sync_client.SyncError("De ondertitel is veranderd; bevestig de ondertitel opnieuw.")
+
+    if synchronized and (player is None or approved_sha256 is None):
+        raise sync_client.SyncError("Synchronisatie vereist een bevestigde ondertitel bij de huidige video.")
+    validate_approval()
     job_id = f"job_{uuid.uuid4().hex}"
-    payload = build_request(source, job_id)
+    payload = build_request(source, job_id, source_sha256=approved_sha256 if synchronized else None)
+    if synchronized:
+        reference_url, reference_headers = sync_client.parse_playback_url(current_video(player))
+        sync_client.register_reference(
+            ADDON.getSettingString("sync_server"),
+            ADDON.getSettingString("sync_cert_sha256"),
+            ADDON.getSettingString("sync_token"),
+            {
+                "job_id": job_id,
+                "source": payload["source"],
+                "source_sha256": approved_sha256,
+                "url": reference_url,
+                "headers": reference_headers,
+            },
+        )
+        validate_approval()
     write_json(request_path(source), payload)
     jobs[job_id] = {
         "job_id": job_id,
         "source": source,
         "video_fingerprint": playing_video_fingerprint,
     }
+    if synchronized:
+        jobs[job_id]["sync_required"] = True
     save_jobs(jobs)
     xbmcgui.Dialog().notification(
         ADDON_NAME,
-        "Vertaling gestart; de film blijft gewoon spelen.",
+        "Ondertitel synchroniseren en daarna vertalen; de film blijft spelen." if synchronized else "Vertaling gestart; de film blijft gewoon spelen.",
         xbmcgui.NOTIFICATION_INFO,
         6000,
     )
 
 
 def output_path(job: dict, status: dict) -> str:
+    if job.get("sync_required") and status.get("version") != 2:
+        raise ValueError("De vereiste synchronisatie is niet bevestigd door de Radxa.")
     output = validate_completed_status(job["source"], status)
     return join_vfs(parent_vfs(job["source"]), output)
 
@@ -586,12 +657,18 @@ def main() -> None:
                         stat = xbmcvfs.Stat(source)
                         if stat.st_size() > MAX_SUBTITLE_BYTES:
                             raise ValueError("Ondertitel is groter dan 2 MB.")
-                        preview = first_dialogue(read_text(source))
+                        identity = playback_identity(player)
+                        raw = read_subtitle_bytes(source)
+                        approved_sha256 = hashlib.sha256(raw).hexdigest()
+                        preview = first_dialogue(raw.decode("utf-8-sig"))
                         if ask_yes_no(source.rsplit("/", 1)[-1], stream, preview):
                             start_job(
                                 source,
-                                current_video_fingerprint(player),
+                                identity[0],
                                 jobs,
+                                player=player,
+                                approved_sha256=approved_sha256,
+                                expected_identity=identity,
                             )
                     except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
                         log(str(exc), xbmc.LOGERROR)
@@ -627,12 +704,20 @@ def main() -> None:
                         stat = xbmcvfs.Stat(temp_source)
                         if stat.st_size() > MAX_SUBTITLE_BYTES:
                             raise ValueError("Ondertitel is groter dan 2 MB.")
-                        preview = first_dialogue(read_text(temp_source))
+                        identity = playback_identity(player)
+                        raw = read_subtitle_bytes(temp_source)
+                        approved_sha256 = hashlib.sha256(raw).hexdigest()
+                        preview = first_dialogue(raw.decode("utf-8-sig"))
                         if ask_yes_no(
                             temp_source.rsplit("/", 1)[-1],
                             stream,
                             preview,
                         ):
+                            xbmc.sleep(1)
+                            if playback_identity(player) != identity:
+                                raise sync_client.SyncError("De video is veranderd; bevestig de ondertitel opnieuw.")
+                            if subtitle_sha256(temp_source) != approved_sha256:
+                                raise sync_client.SyncError("De ondertitel is veranderd; bevestig de ondertitel opnieuw.")
                             staged = stage_temp_subtitle(temp_source, folder)
                             staged_stat = xbmcvfs.Stat(staged)
                             baseline[staged] = (
@@ -641,8 +726,11 @@ def main() -> None:
                             )
                             start_job(
                                 staged,
-                                current_video_fingerprint(player),
+                                identity[0],
                                 jobs,
+                                player=player,
+                                approved_sha256=approved_sha256,
+                                expected_identity=identity,
                             )
                     except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
                         log(str(exc), xbmc.LOGERROR)

@@ -91,19 +91,25 @@ def status_path(source_path: str) -> str:
     return f"{source_path}{STATUS_SUFFIX}"
 
 
-def build_request(source_path: str, job_id: str) -> dict:
+def build_request(source_path: str, job_id: str, source_sha256: str | None = None) -> dict:
     source_name = _basename(source_path)
     if not is_source_subtitle(source_name):
         raise ValueError("geen geldige Engelse SRT")
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", job_id):
         raise ValueError("ongeldig opdracht-ID")
 
-    return {
+    payload = {
         "version": 1,
         "job_id": job_id,
         "source": source_name,
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
+    if source_sha256 is not None:
+        if not isinstance(source_sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", source_sha256):
+            raise ValueError("ongeldige controlewaarde voor synchronisatie")
+        payload["version"] = 2
+        payload["sync"] = {"required": True, "source_sha256": source_sha256}
+    return payload
 
 
 def video_fingerprint(video: str) -> str:
@@ -115,8 +121,12 @@ def video_fingerprint(video: str) -> str:
 def validate_completed_status(source_path: str, status: Mapping[str, object]) -> str:
     source_name = _basename(source_path)
     expected_output = translated_name(source_path)
-    if status.get("version") != 1 or status.get("state") != "complete":
+    if type(status.get("version")) is not int or status.get("version") not in {1, 2} or status.get("state") != "complete":
         raise ValueError("ongeldige gereedmelding van de Radxa")
+    if status.get("version") == 2:
+        sync = status.get("sync")
+        if not isinstance(sync, dict) or sync.get("state") != "complete":
+            raise ValueError("synchronisatie is nog niet veilig afgerond")
     if status.get("source") != source_name:
         raise ValueError("ongeldige bron in gereedmelding")
     if status.get("output") != expected_output:

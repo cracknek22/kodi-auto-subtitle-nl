@@ -26,3 +26,39 @@ msgstr "Automatisch Engelse ondertitels zoeken via OpenSubtitles"
 msgctxt "#32004"
 msgid "Requires the official OpenSubtitles.com add-on. Downloads one English SRT per playback, then asks before translation. Downloads count towards your OpenSubtitles quota, even if you decline translation."
 msgstr "Vereist de officiële OpenSubtitles.com-add-on. Downloadt per afspeelbeurt één Engelse SRT en vraagt daarna om toestemming voor vertaling. De download telt mee voor je OpenSubtitles-limiet, ook als je de vertaling weigert."
+
+msgctxt "#32005"
+msgid "Subtitle synchronization"
+msgstr "Ondertitels synchroniseren"
+
+msgctxt "#32006"
+msgid "Synchronize with the video audio before translation"
+msgstr "Eerst synchroniseren met de filmaudio, daarna vertalen"
+
+msgctxt "#32007"
+msgid "Disabled until a secure Radxa synchronization server, certificate fingerprint and access token are configured. Requires a direct HTTP(S) video stream. A synchronization error stops the job instead of translating without synchronization."
+msgstr "Staat standaard uit. Stel eerst de beveiligde Radxa-synchronisatieserver, certificaatvingerafdruk en toegangstoken in. Vereist een directe HTTP(S)-videostream. Bij een synchronisatiefout stopt de opdracht; er wordt niet zonder synchronisatie vertaald."
+
+msgctxt "#32008"
+msgid "Secure synchronization server"
+msgstr "Beveiligde synchronisatieserver"
+
+msgctxt "#32009"
+msgid "HTTPS address of the Radxa reference service. After confirmation, the current video link is sent privately to this server to analyze its audio."
+msgstr "HTTPS-adres van de Radxa-referentieservice. Na bevestiging wordt de huidige videolink privé naar deze server gestuurd om de audio te analyseren."
+
+msgctxt "#32010"
+msgid "Certificate SHA-256 fingerprint"
+msgstr "SHA-256-vingerafdruk van het certificaat"
+
+msgctxt "#32011"
+msgid "Copy the 64-character SHA-256 fingerprint from the Radxa setup. Kodi checks it before sending the access token or video link."
+msgstr "Kopieer de SHA-256-vingerafdruk van 64 tekens uit de Radxa-installatie. Kodi controleert deze voordat het toegangstoken of de videolink wordt verstuurd."
+
+msgctxt "#32012"
+msgid "Private synchronization access token"
+msgstr "Privétoegangstoken voor synchronisatie"
+
+msgctxt "#32013"
+msgid "Use the access token created by the Radxa setup. It stays in Kodi settings; it is never written to the shared subtitle folder."
+msgstr "Gebruik het toegangstoken uit de Radxa-installatie. Het blijft in de Kodi-instellingen en komt nooit in de gedeelde ondertitelmap."

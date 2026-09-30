@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 import sys
@@ -62,6 +63,11 @@ class FakeFile:
         if self.path in self.vfs.read_errors:
             raise self.vfs.read_errors[self.path]
         return self.vfs.files[self.path]
+
+    def readBytes(self, size=0):
+        content = self.read()
+        raw = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        return bytearray(raw[:size] if size else raw)
 
     def write(self, content):
         current = self.vfs.files.get(self.path, "")
@@ -478,6 +484,11 @@ class TempSubtitleStagingTests(KodiServiceTestCase):
 
 
 class PlayerAndConfirmationTests(KodiServiceTestCase):
+    def test_sync_enabled_confirmation_describes_audio_synchronization(self):
+        self.service.ADDON.getSettingBool = lambda key: key == "sync_enabled"
+        self.service.ask_yes_no("Movie.en.srt", "English", "Hello.")
+        self.assertIn("filmaudio synchroniseren", self.dialog.yesno_calls[-1][0][1])
+
     def test_player_helpers_handle_empty_and_runtime_failures(self):
         player = FakePlayer(video="movie.mkv", subtitle="", playing=True)
         self.assertEqual(self.service.active_subtitle_name(player), "onbekend")
@@ -678,6 +689,94 @@ class JobPersistenceAndLoadingTests(KodiServiceTestCase):
             self.service.load_completed_subtitle(player, job, status)
 
 
+class SynchronizedJobTests(KodiServiceTestCase):
+    def setUp(self):
+        super().setUp()
+        self.source = DEFAULT_FOLDER + "Movie.en.srt"
+        self.raw = b"\xef\xbb\xbf1\r\n00:00:01,000 --> 00:00:02,000\r\nEnglish.\r\n"
+        self.vfs.files[self.source] = self.raw
+        self.digest = hashlib.sha256(self.raw).hexdigest()
+        self.player = FakePlayer(video="https://cdn.example/movie?token=private|Cookie=session%3Dprivate")
+        self.fingerprint = self.service.current_video_fingerprint(self.player)
+        self.jobs = {}
+        self.settings = {"sync_server": "https://192.168.2.60:8766", "sync_cert_sha256": "a" * 64, "sync_token": "private-sync-token-" + "b" * 32}
+        self.service.ADDON.getSettingBool = lambda key: key == "sync_enabled"
+        self.service.ADDON.getSettingString = lambda key: self.settings.get(key, DEFAULT_FOLDER)
+
+    def start(self, approved=None):
+        return self.service.start_job(self.source, self.fingerprint, self.jobs, player=self.player, approved_sha256=self.digest if approved is None else approved)
+
+    def test_registers_raw_byte_digest_before_writing_request_and_keeps_secrets_private(self):
+        calls = []
+        def register(_server, _pin, _token, payload):
+            self.assertFalse(any(p.endswith(".translate.request.json") for p in self.vfs.files))
+            calls.append(payload)
+        with patch.object(self.service.sync_client, "register_reference", side_effect=register):
+            self.start()
+        self.assertEqual(calls[0]["source_sha256"], self.digest)
+        self.assertEqual(calls[0]["url"], "https://cdn.example/movie?token=private")
+        self.assertEqual(calls[0]["headers"], {"Cookie": "session=private"})
+        request = json.loads(self.vfs.files[self.service.request_path(self.source)])
+        self.assertEqual(request["version"], 2)
+        self.assertEqual(request["sync"], {"required": True, "source_sha256": self.digest})
+        self.assertEqual(request["job_id"], calls[0]["job_id"])
+        self.assertNotIn("private", str(self.vfs.files))
+        self.assertNotIn("private", str(self.jobs))
+        self.assertIn("synchroniseren", self.dialog.notifications[-1][0][1])
+
+    def test_registration_failure_does_not_create_unsynchronized_fallback(self):
+        with patch.object(self.service.sync_client, "register_reference", side_effect=ValueError("synchronisatie mislukt")), self.assertRaises(ValueError):
+            self.start()
+        self.assertFalse(any(p.endswith(".translate.request.json") for p in self.vfs.files))
+        self.assertEqual(self.jobs, {})
+
+    def test_changed_source_or_unresolved_video_is_rejected_before_registration(self):
+        with patch.object(self.service.sync_client, "register_reference") as register:
+            with self.assertRaises(ValueError):
+                self.start(approved="c" * 64)
+            self.player.video = "plugin://unresolved"
+            self.fingerprint = self.service.current_video_fingerprint(self.player)
+            with self.assertRaises(ValueError):
+                self.start()
+            register.assert_not_called()
+        self.assertEqual(self.jobs, {})
+
+    def test_source_change_while_registering_cannot_create_request(self):
+        def changed(*_args):
+            self.vfs.files[self.source] = self.raw.replace(b"English", b"Changed")
+        with patch.object(self.service.sync_client, "register_reference", side_effect=changed), self.assertRaises(ValueError):
+            self.start()
+        self.assertFalse(any(p.endswith(".translate.request.json") for p in self.vfs.files))
+
+    def test_queued_playback_restart_after_https_cannot_create_request(self):
+        pending = []
+        self.player.playback_generation = 0
+        def register(*_args):
+            pending.append(True)
+        def pump(_milliseconds):
+            if pending:
+                pending.clear()
+                self.player.playback_generation += 1
+        self.service.xbmc.sleep = pump
+        with patch.object(self.service.sync_client, "register_reference", side_effect=register), self.assertRaises(ValueError):
+            self.start()
+        self.assertFalse(any(p.endswith(".translate.request.json") for p in self.vfs.files))
+
+    def test_sync_enabled_requires_player_and_approved_source(self):
+        with patch.object(self.service.sync_client, "register_reference") as register:
+            with self.assertRaises(ValueError):
+                self.service.start_job(self.source, self.fingerprint, self.jobs)
+            with self.assertRaises(ValueError):
+                self.service.start_job(self.source, self.fingerprint, self.jobs, player=self.player)
+            register.assert_not_called()
+
+    def test_synchronized_job_rejects_version_one_complete_downgrade(self):
+        job = {"source": self.source, "sync_required": True}
+        status = {"version": 1, "state": "complete", "source": "Movie.en.srt", "output": "Movie.nl.srt"}
+        with self.assertRaisesRegex(ValueError, "synchronisatie"):
+            self.service.output_path(job, status)
+
+
 class PollingTests(KodiServiceTestCase):
     @staticmethod
     def job(job_id="job_one"):
@@ -755,6 +854,39 @@ class PollingTests(KodiServiceTestCase):
 
 
 class MainLoopTests(KodiServiceTestCase):
+    def test_synchronized_manual_and_temp_flows_register_only_after_yes(self):
+        for from_temp in (False, True):
+            for confirmed in (False, True):
+                with self.subTest(from_temp=from_temp, confirmed=confirmed):
+                    self.service, self.vfs, self.dialog = load_service(self.profile.name)
+                    source = (self.service.TEMP_PATH if from_temp else DEFAULT_FOLDER) + "Movie.en.srt"
+                    raw = b"\xef\xbb\xbf1\r\n00:00:01,000 --> 00:00:02,000\r\nHello.\r\n"
+                    self.vfs.files[source] = raw
+                    signature = (len(raw), 1)
+                    self.vfs.metadata[source] = signature
+                    player = FakePlayer(video="https://cdn.example/movie?token=private")
+                    self.service.PlaybackPlayer = lambda: player
+                    self.service.xbmc.Monitor = lambda: SequenceMonitor([False, False, True])
+                    self.service.ADDON.getSettingBool = lambda key: key == "sync_enabled"
+                    self.dialog.yesno_result = confirmed
+                    remote = iter([{}, {}, {}] if from_temp else [{}, {source: signature}, {source: signature}])
+                    temporary = iter([{}, {source: signature}, {source: signature}] if from_temp else [{}, {}, {}])
+                    def register(_server, _pin, _token, payload):
+                        self.assertEqual(len(self.dialog.yesno_calls), 1)
+                        self.assertEqual(payload["source_sha256"], hashlib.sha256(raw).hexdigest())
+                    with (
+                        patch.object(self.service, "snapshot", side_effect=lambda _folder: next(remote)),
+                        patch.object(self.service, "snapshot_kodi_temp", side_effect=lambda: next(temporary)),
+                        patch.object(self.service.sync_client, "register_reference", side_effect=register) as registration,
+                    ):
+                        self.service.main()
+                    requests = [p for p in self.vfs.files if p.endswith(".translate.request.json")]
+                    self.assertEqual(len(requests), int(confirmed))
+                    self.assertEqual(registration.call_count, int(confirmed))
+                    if confirmed:
+                        self.assertEqual(json.loads(self.vfs.files[requests[0]])["version"], 2)
+                    self.assertNotIn("private", str(self.vfs.files))
+
     def test_main_reports_initial_unreachable_folder_and_stops_cleanly(self):
         self.service.xbmc.Monitor = lambda: SequenceMonitor([True])
         with patch.object(

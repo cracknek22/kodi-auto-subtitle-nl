@@ -16,11 +16,14 @@ Nederlandse SRT zodra die klaar is.
 3. Alleen na **Ja** wordt een tijdelijke Kodi-SRT onder een veilige, unieke
    naam naar de SMB-map gekopieerd en schrijft Kodi een bevestigde
    vertaalopdracht.
-4. De Radxa vertaalt de dialoog met GPT-5.6 Luna. Als Luna tijdelijk vol is,
+4. Met de optionele, beveiligd gekoppelde synchronisatie vergelijkt de Radxa
+   eerst de SRT met de filmaudio via ffsubsync. De oorspronkelijke SRT blijft
+   onaangeroerd; alleen een tijdelijke kopie krijgt gecorrigeerde tijdcodes.
+5. De Radxa vertaalt de dialoog met GPT-5.6 Luna. Als Luna tijdelijk vol is,
    wordt GPT-5.6 Terra geprobeerd.
-5. De originele cue-nummers, tijdcodes, HTML/ASS-tags, witruimte en
+6. Cue-nummers, tijdcodes (eventueel gecorrigeerd), HTML/ASS-tags, witruimte en
    regelafbrekingen worden lokaal bewaard en niet door het model herschreven.
-6. Kodi laadt de Nederlandse SRT alleen wanneer dezelfde video nog speelt.
+7. Kodi laadt de Nederlandse SRT alleen wanneer dezelfde video nog speelt.
 
 De afspeel-URL wordt nooit in de gedeelde map opgeslagen. Kodi bewaart lokaal
 alleen een SHA-256-vingerafdruk om te controleren of dezelfde video nog speelt.
@@ -29,7 +32,7 @@ deze koppeling kopieert of leest geen OpenSubtitles-inloggegevens.
 
 ## Kodi installeren
 
-1. Download `service.autosubtranslate.nl-0.3.0.zip` bij
+1. Download `service.autosubtranslate.nl-0.4.0.zip` bij
    [GitHub Releases](https://github.com/cracknek22/kodi-auto-subtitle-nl/releases).
 2. Zet in Kodi zo nodig **Instellingen → Systeem → Add-ons → Onbekende
    bronnen** aan.
@@ -87,10 +90,39 @@ staat, verschijnt de bestaande bevestigingspopup. Bij meerdere nieuwe SRT's
 laat de add-on eerst kiezen welk bestand bedoeld is. Je kunt automatisch
 zoeken in de instellingen uitschakelen zonder deze handmatige route te verliezen.
 
-De vertaler wijzigt de originele tijdcodes niet. Dat behoudt de timing van de
-gekozen ondertitel, maar maakt een verkeerde release niet alsnog synchroon.
+Zonder synchronisatie wijzigt de vertaler de tijdcodes niet. Met synchronisatie
+past ffsubsync de timing vóór het vertalen aan; het model zelf verandert nooit
+tijdcodes. Dit is geen garantie dat een verkeerde montage of release passend
+kan worden gemaakt. De controle gebruikt spraakactiviteit, geen begrip van de
+gesproken tekst. Bij een mislukte synchronisatie stopt de hele opdracht; er
+wordt niet stilzwijgend zonder synchronisatie vertaald.
 Bij ontbrekende of onjuiste videometadata kan OpenSubtitles een verkeerde match
 vinden; kies dan Nee en zoek handmatig een passende versie.
+
+## Synchronisatie veilig koppelen (v0.4.0)
+
+Synchronisatie staat in de add-on standaard **uit** totdat de server is gekoppeld.
+Stel eerst de Radxa in volgens [de installatiehandleiding](deploy/SYNC.md).
+Open daarna de add-oninstellingen → **Ondertitels synchroniseren**:
+
+1. Vul het serveradres in, bijvoorbeeld `https://192.168.2.60:8766`.
+2. Vul de SHA-256-certificaatvingerafdruk en het privétoegangstoken van de Radxa
+   in. Deel het token niet via GitHub, chats of de SMB-map. De invoer is verborgen,
+   maar Kodi bewaart dit in zijn lokale instellingen: behandel backups daarvan
+   dus als vertrouwelijk.
+3. Zet **Eerst synchroniseren met de filmaudio, daarna vertalen** aan.
+
+Deze versie ondersteunt directe HTTP(S)-mediabestanden van expliciet toegestane
+publieke hosts, bijvoorbeeld een door Kodi opgeloste Real-Debrid-link. Een
+`plugin://`-link, SMB/lokaal videobestand, HLS/DASH-playlist of onbekende
+mediahost wordt niet automatisch omgezet of geaccepteerd. Synchronisatie kan
+mediadata downloaden; bij een videobestand is dat niet gegarandeerd alleen audio.
+Er wordt geen volledige film als bestand op de gedeelde map opgeslagen.
+
+Kodi verstuurt de videolink en eventuele afspeelheaders pas na jouw bevestiging,
+via HTTPS met een vooraf gecontroleerde certificaatvingerafdruk. De Radxa
+bewaart deze tijdelijk in geheugen, gekoppeld aan precies de goedgekeurde SRT.
+De SMB-opdracht bevat alleen bestandsnaam, opdrachtnummer en bestandshash.
 
 ## Belangrijke Kodi-beperking
 
@@ -119,9 +151,11 @@ Vereisten:
 - `codex login status` moet aangeven dat de Radxa met ChatGPT is aangemeld
 
 De meegeleverde user-service staat in
-`deploy/subtitle-translator.service`. Deze begrenst de vertaler op 512 MB RAM
-en maximaal één CPU-kern. Omdat de modelberekening in de cloud gebeurt, blijft
-de normale belasting op de Radxa zeer laag.
+`deploy/subtitle-translator.service`. Deze begrenst alleen vertalen op 512 MB RAM
+en maximaal één CPU-kern. De optionele synchronisatie-instelling verhoogt de
+geheugengrens naar 1 GB en behoudt die CPU-grens. Dit zijn maxima, geen continu
+gereserveerd geheugen. ffsubsync gebruikt lokaal CPU voor audioanalyse;
+de taalmodelberekening blijft in de cloud.
 
 Voor de huidige Radxa-installatie (`radxa` als gebruiker) zijn de
 installatiestappen:
@@ -165,3 +199,11 @@ Codex-uitvoer, SMB-uitval en het voorkomen van afspeel-URL's in gedeelde
 opdrachten. De OpenSubtitles-tests controleren bovendien Engelse resultaten,
 cacheverversing, Nee zonder opdracht, bronwijzigingen en het afbreken bij
 een andere of opnieuw gestarte video.
+
+De synchronisatietests controleren tevens HTTPS-pinning vóór tokenoverdracht,
+eenmalige referenties, publieke mediahosts, bronhashes, veilige redirects,
+beperkte FFmpeg-protocollen/formaten en stoppen bij synchronisatiefouten.
+De optionele echte audiotest staat in `tests/test_sync_audio_integration.py`:
+24 zelf gegenereerde zinnen met een opzettelijke vertraging van 3 seconden.
+De mediaproxy en FFmpeg/ffsubsync zijn daarbij echt; de vertaaluitvoer is een
+testvervanger. Dit bewijst nog niet de werking met jouw Kodi-box of elke film.

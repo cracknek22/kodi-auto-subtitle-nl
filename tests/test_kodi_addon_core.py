@@ -82,6 +82,20 @@ class CandidateSelectionTests(unittest.TestCase):
 
 
 class JobProtocolTests(unittest.TestCase):
+    def test_sync_request_contains_hash_only_and_requires_completed_sync(self):
+        source = "smb://server/subtitles/Movie.en.srt"
+        payload = build_request(source, "job_12345678", source_sha256="a" * 64)
+        self.assertEqual(payload["version"], 2)
+        self.assertEqual(payload["sync"], {"required": True, "source_sha256": "a" * 64})
+        self.assertEqual(set(payload), {"version", "job_id", "source", "requested_at", "sync"})
+        with self.assertRaises(ValueError):
+            build_request(source, "job_12345678", source_sha256="not-a-hash")
+        status = {"version": 2, "state": "complete", "source": "Movie.en.srt", "output": "Movie.nl.srt"}
+        for sync in (None, {}, {"state": "failed"}, {"state": "processing"}):
+            with self.subTest(sync=sync), self.assertRaisesRegex(ValueError, "synchronisatie"):
+                validate_completed_status(source, {**status, "sync": sync})
+        self.assertEqual(validate_completed_status(source, {**status, "sync": {"state": "complete", "offset_seconds": 1.25, "scale_factor": 1.0}}), "Movie.nl.srt")
+
     def test_builds_a_safe_unique_name_for_a_staged_kodi_subtitle(self):
         self.assertEqual(
             staged_subtitle_name(
