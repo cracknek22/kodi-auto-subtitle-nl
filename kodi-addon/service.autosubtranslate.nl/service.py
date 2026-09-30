@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import time
 import uuid
 
 import xbmc
@@ -31,12 +33,31 @@ from core import (  # noqa: E402
     validate_completed_status,
     video_fingerprint,
 )
+import opensubs  # noqa: E402
 
 
 MAX_SUBTITLE_BYTES = 2 * 1024 * 1024
 JOBS_PATH = os.path.join(PROFILE_PATH, "jobs.json")
 TRANSLATED_PATH = os.path.join(PROFILE_PATH, "translated")
 TEMP_PATH = xbmcvfs.translatePath("special://temp/").rstrip("/").rstrip("\\") + "/"
+
+
+class PlaybackPlayer(xbmc.Player):
+    """Invalidate in-flight searches even if the same video is restarted."""
+
+    playback_generation = 0
+
+    def onAVStarted(self):
+        self.playback_generation += 1
+
+    def onPlayBackStopped(self):
+        self.playback_generation += 1
+
+    def onPlayBackEnded(self):
+        self.playback_generation += 1
+
+    def onPlayBackError(self):
+        self.playback_generation += 1
 
 
 def log(message: str, level: int = xbmc.LOGINFO) -> None:
@@ -188,10 +209,14 @@ def current_video_fingerprint(player: xbmc.Player) -> str:
     return video_fingerprint(current_video(player))
 
 
-def ask_yes_no(filename: str, stream: str, preview: str) -> bool:
+def ask_yes_no(
+    filename: str, stream: str, preview: str, video_title: str = "",
+) -> bool:
+    heading = f"Video: {safe_label(video_title)}\n" if video_title else ""
+    source_label = "Gevonden ondertitel" if video_title else "Actieve ondertitel"
     message = (
-        f"Bestand: {safe_label(filename)}\n"
-        f"Actieve ondertitel: {safe_label(stream)}\n\n"
+        f"{heading}Bestand: {safe_label(filename)}\n"
+        f"{source_label}: {safe_label(stream)}\n\n"
         f"Voorbeeld: {safe_label(preview)}\n\n"
         "Deze ondertitel naar natuurlijk Nederlands vertalen?"
     )
@@ -231,6 +256,133 @@ def choose_candidate(candidates: list[str]) -> str | None:
         return None
     choice = xbmcgui.Dialog().select("Kies de Engelse ondertitel", labels)
     return usable[choice] if 0 <= choice < len(usable) else None
+
+
+def playback_identity(player: xbmc.Player) -> tuple[str, int]:
+    return current_video_fingerprint(player), getattr(player, "playback_generation", 0)
+
+
+def notify_opensubs(message: str) -> None:
+    xbmcgui.Dialog().notification(
+        ADDON_NAME, message, xbmcgui.NOTIFICATION_INFO, 7000,
+    )
+
+
+def search_opensubs(player, folder, jobs, baseline) -> None:
+    """Let the official provider own login/search/download; only submit after Yes."""
+    identity = playback_identity(player)
+    if not identity[0]:
+        return
+
+    def still_playing():
+        # Synchronous JSON-RPC releases Kodi's GIL but does not dispatch this
+        # service's queued Player callbacks. Drain them before comparing.
+        xbmc.sleep(1)
+        return playback_identity(player) == identity
+
+    staged = None
+    submitted = False
+    try:
+        if not xbmc.getCondVisibility(f"System.AddonIsEnabled({opensubs.PROVIDER_ID})"):
+            notify_opensubs("Installeer en activeer eerst de officiële OpenSubtitles.com-add-on.")
+            return
+        provider = xbmcaddon.Addon(opensubs.PROVIDER_ID)
+        provider_temp = join_vfs(provider.getAddonInfo("profile"), "temp")
+        title = xbmc.getInfoLabel("VideoPlayer.Title") or "Huidige video"
+        notify_opensubs("Engelse ondertitel zoeken via OpenSubtitles…")
+        entries = opensubs.directory_files(xbmc.executeJSONRPC, opensubs.search_url())
+        if not still_playing():
+            return
+        download = opensubs.download_url(entries)
+        if not download:
+            notify_opensubs("Geen Engelse ondertitel gevonden. Je kunt zelf een andere zoeken.")
+            return
+        entries = opensubs.directory_files(xbmc.executeJSONRPC, download)
+        if not still_playing():
+            return
+        source = opensubs.subtitle_path(entries, provider_temp, xbmcvfs.translatePath)
+        if not source:
+            notify_opensubs("Geen bruikbare SRT ontvangen. Controleer OpenSubtitles en je downloadlimiet.")
+            return
+        size = int(xbmcvfs.Stat(source).st_size())
+        if not 0 < size <= MAX_SUBTITLE_BYTES:
+            raise ValueError("invalid subtitle size")
+        content = read_text(source)
+        if not re.search(
+            r"(?m)^\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}", content,
+        ):
+            raise ValueError("invalid SRT")
+        preview = first_dialogue(content)
+        if not still_playing() or not ask_yes_no(
+            source.rsplit("/", 1)[-1], "Engels — OpenSubtitles.com", preview, title,
+        ):
+            return
+        if not still_playing():
+            return
+        # The provider can clean/replace its temp files during a manual download.
+        # Never translate different content from the preview the user approved.
+        if read_text(source) != content:
+            raise ValueError("subtitle changed during confirmation")
+        staged = stage_temp_subtitle(source, folder)
+        stat = xbmcvfs.Stat(staged)
+        baseline[staged] = (int(stat.st_size()), int(stat.st_mtime()))
+        if read_text(staged) != content:
+            raise ValueError("subtitle changed during copy")
+        if still_playing():
+            start_job(staged, identity[0], jobs)
+            submitted = True
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        # VFS/provider exceptions can contain account or stream URLs.
+        log(f"OpenSubtitles ophalen mislukt ({type(exc).__name__})", xbmc.LOGWARNING)
+        notify_opensubs("Ophalen of opslaan mislukt. Controleer OpenSubtitles en de SMB-map.")
+    finally:
+        # Only delete our unique copy, never the provider's file. A confirmed
+        # request may already exist if persisting the local job failed.
+        if staged and not submitted:
+            try:
+                if not xbmcvfs.exists(request_path(staged)):
+                    xbmcvfs.delete(staged)
+                    baseline.pop(staged, None)
+            except (OSError, RuntimeError):
+                log("OpenSubtitles: opruimen uitgesteld wegens SMB-uitval", xbmc.LOGWARNING)
+
+
+class AutomaticSearch:
+    """One attempt per playback, delayed until player metadata has settled."""
+
+    def __init__(self):
+        self.identity = None
+        self.started_at = 0.0
+        self.attempted = False
+
+    def observe(self, player):
+        identity = playback_identity(player)
+        if identity != self.identity:
+            self.identity = identity
+            self.started_at = time.monotonic()
+            self.attempted = False
+
+    def skip_current(self, player):
+        self.observe(player)
+        self.attempted = True
+
+    def run_if_due(self, player, folder, jobs, baseline):
+        self.observe(player)
+        if not self.identity[0] or self.attempted:
+            return
+        if not ADDON.getSettingBool("opensubs_auto_search"):
+            return
+        if is_dutch_subtitle(active_subtitle_name(player)) or any(
+            job.get("video_fingerprint") == self.identity[0] for job in jobs.values()
+        ):
+            self.attempted = True
+            return
+        if time.monotonic() - self.started_at < 5:
+            return
+        if xbmc.getCondVisibility("Window.IsActive(subtitlesearch)"):
+            return
+        self.attempted = True
+        search_opensubs(player, folder, jobs, baseline)
 
 
 def load_jobs() -> dict[str, dict]:
@@ -359,7 +511,8 @@ def main() -> None:
     xbmcvfs.mkdirs(PROFILE_PATH)
     xbmcvfs.mkdirs(TRANSLATED_PATH)
     monitor = xbmc.Monitor()
-    player = xbmc.Player()
+    player = PlaybackPlayer()
+    automatic_search = AutomaticSearch()
     jobs = load_jobs()
     folder = configured_folder()
 
@@ -380,6 +533,7 @@ def main() -> None:
     log(f"Service gestart; gecontroleerde map: {folder}; Kodi-tempmap: {TEMP_PATH}")
 
     while not monitor.waitForAbort(1.0):
+        automatic_search.observe(player)
         try:
             poll_jobs(player, jobs)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -419,6 +573,7 @@ def main() -> None:
             temp_current,
         )
         if candidates:
+            automatic_search.skip_current(player)
             stream = active_subtitle_name(player)
             handled_candidates: list[str] = []
             if is_dutch_subtitle(stream):
@@ -459,6 +614,7 @@ def main() -> None:
                 temp_baseline[path] = temp_current[path]
 
         elif temp_candidates:
+            automatic_search.skip_current(player)
             stream = active_subtitle_name(player)
             handled_temp_candidates: list[str] = []
             if is_dutch_subtitle(stream):
@@ -501,6 +657,9 @@ def main() -> None:
 
             for path in handled_temp_candidates:
                 temp_baseline[path] = temp_current[path]
+
+        else:
+            automatic_search.run_if_due(player, folder, jobs, baseline)
 
         previous = current
         temp_previous = temp_current

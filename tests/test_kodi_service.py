@@ -31,6 +31,9 @@ class FakeAddon:
     def getSettingString(self, _key):
         return self.setting
 
+    def getSettingBool(self, _key):
+        return False
+
 
 class FakeStat:
     def __init__(self, size: int, mtime: int = 0):
@@ -221,6 +224,7 @@ def load_service(profile_path: str):
     xbmc.LOGERROR = 3
     xbmc.logs = []
     xbmc.log = lambda *args, **kwargs: xbmc.logs.append((args, kwargs))
+    xbmc.sleep = lambda _milliseconds: None
     xbmc.Player = FakePlayer
     xbmc.Monitor = lambda: SequenceMonitor([True])
 
@@ -769,7 +773,7 @@ class MainLoopTests(KodiServiceTestCase):
 
     def test_main_handles_status_error_and_folder_change(self):
         player = FakePlayer(playing=True)
-        self.service.xbmc.Player = lambda: player
+        self.service.PlaybackPlayer = lambda: player
         self.service.xbmc.Monitor = lambda: SequenceMonitor([False, True])
         folders = iter(["smb://old/subs/", "smb://new/subs/"])
         with (
@@ -796,7 +800,7 @@ class MainLoopTests(KodiServiceTestCase):
 
     def test_main_refreshes_baseline_while_no_video_is_playing(self):
         player = FakePlayer(playing=False)
-        self.service.xbmc.Player = lambda: player
+        self.service.PlaybackPlayer = lambda: player
         self.service.xbmc.Monitor = lambda: SequenceMonitor([False, True])
         snapshots = iter([{}, {"smb://server/subs/A.en.srt": (10, 1)}])
         with (
@@ -812,7 +816,7 @@ class MainLoopTests(KodiServiceTestCase):
         )
         self.vfs.metadata[source] = (53, 100)
         player = FakePlayer(video="smb://movies/Movie.mkv", playing=True)
-        self.service.xbmc.Player = lambda: player
+        self.service.PlaybackPlayer = lambda: player
         self.service.xbmc.Monitor = lambda: SequenceMonitor([False, False, True])
         snapshots = iter([{}, {source: (53, 100)}, {source: (53, 100)}])
         self.dialog.yesno_result = True
@@ -839,7 +843,7 @@ class MainLoopTests(KodiServiceTestCase):
         )
         self.vfs.metadata[temp_source] = (53, 100)
         player = FakePlayer(video="plugin://movie/secret-token", playing=True)
-        self.service.xbmc.Player = lambda: player
+        self.service.PlaybackPlayer = lambda: player
         self.service.xbmc.Monitor = lambda: SequenceMonitor([False, False, True])
         remote_snapshots = iter([{}, {}, {}])
         temp_snapshots = iter(
@@ -890,7 +894,7 @@ class MainLoopTests(KodiServiceTestCase):
     def test_main_marks_candidates_handled_when_dutch_is_already_active(self):
         source = f"{DEFAULT_FOLDER}Movie.en.srt"
         player = FakePlayer(video="movie.mkv", subtitle="Nederlands", playing=True)
-        self.service.xbmc.Player = lambda: player
+        self.service.PlaybackPlayer = lambda: player
         self.service.xbmc.Monitor = lambda: SequenceMonitor(
             [False, False, False, True]
         )
@@ -917,7 +921,7 @@ class MainLoopTests(KodiServiceTestCase):
         self.vfs.files[source] = "subtitle"
         self.vfs.metadata[source] = (self.service.MAX_SUBTITLE_BYTES + 1, 1)
         player = FakePlayer(video="movie.mkv", playing=True)
-        self.service.xbmc.Player = lambda: player
+        self.service.PlaybackPlayer = lambda: player
         self.service.xbmc.Monitor = lambda: SequenceMonitor([False, False, True])
         snapshots = iter(
             [

@@ -1,15 +1,18 @@
 # Automatische Nederlandse ondertitels voor Kodi
 
-Deze Kodi-service vraagt eerst om bevestiging en vertaalt daarna een gekozen
-Engelse SRT automatisch naar natuurlijk Nederlands. De vertaling draait via
+Deze Kodi-service zoekt automatisch een Engelse SRT via OpenSubtitles, vraagt
+eerst om bevestiging en vertaalt daarna naar natuurlijk Nederlands. De vertaling draait via
 Codex op de Radxa; Kodi blijft tijdens het vertalen gewoon afspelen en laadt de
 Nederlandse SRT zodra die klaar is.
 
 ## Wat gebeurt er?
 
-1. De add-on ziet een nieuw gekozen externe Engelse SRT in de ingestelde
-   SMB-map of in Kodi's tijdelijke map.
-2. De add-on toont de bestandsnaam en een korte tekstvoorvertoning.
+1. Ongeveer vijf seconden na de start van een film of aflevering zoekt de add-on
+   via de officiële OpenSubtitles.com-add-on een Engelse ondertitel. De eerste
+   bruikbare Engelse match in de volgorde van die add-on wordt gedownload.
+   Als er al een Nederlandse ondertitel actief is of een vertaling voor deze
+   video loopt, wordt de automatische zoekactie overgeslagen.
+2. De add-on toont de videotitel, bron en een korte tekstvoorvertoning.
 3. Alleen na **Ja** wordt een tijdelijke Kodi-SRT onder een veilige, unieke
    naam naar de SMB-map gekopieerd en schrijft Kodi een bevestigde
    vertaalopdracht.
@@ -21,10 +24,12 @@ Nederlandse SRT zodra die klaar is.
 
 De afspeel-URL wordt nooit in de gedeelde map opgeslagen. Kodi bewaart lokaal
 alleen een SHA-256-vingerafdruk om te controleren of dezelfde video nog speelt.
+Voor zoeken gebruikt de officiële OpenSubtitles-add-on zelf de video-informatie;
+deze koppeling kopieert of leest geen OpenSubtitles-inloggegevens.
 
 ## Kodi installeren
 
-1. Download `service.autosubtranslate.nl-0.2.0.zip` bij
+1. Download `service.autosubtranslate.nl-0.3.0.zip` bij
    [GitHub Releases](https://github.com/cracknek22/kodi-auto-subtitle-nl/releases).
 2. Zet in Kodi zo nodig **Instellingen → Systeem → Add-ons → Onbekende
    bronnen** aan.
@@ -34,9 +39,16 @@ alleen een SHA-256-vingerafdruk om te controleren of dezelfde video nog speelt.
    Configureren**.
 5. Kies als gecontroleerde map:
    `smb://192.168.2.60/share/subtitles/`
-6. Stel in **Instellingen → Speler → Taal** de opslaglocatie voor gedownloade
-   ondertitels in op **Aangepaste ondertitelmap** en kies exact dezelfde
-   SMB-map.
+6. Installeer/activeer de officiële **OpenSubtitles.com**-add-on
+   (`service.subtitles.opensubtitles-com`) vanuit Kodi's add-onrepository en
+   log daarin zelf in. De bestaande aanmelding wordt gebruikt.
+7. Laat **Automatisch Engelse ondertitels zoeken via OpenSubtitles** aan staan
+   (standaard aan). Herstart Kodi na het bijwerken van de ZIP.
+
+Voor automatisch ophalen hoeft Kodi's eigen downloadmap niet op SMB te staan:
+deze add-on kopieert de opgehaalde SRT na jouw bevestiging zelf naar de server.
+Voor handmatige downloads kun je bij **Instellingen → Speler → Taal** de
+**Aangepaste ondertitelmap** wel op dezelfde SMB-map zetten.
 
 Gebruik bij het toevoegen van de SMB-bron je eigen Samba-gebruikersnaam en
 wachtwoord; deze staan niet in de add-on of in deze repository.
@@ -58,20 +70,44 @@ Bij een fout wordt de vorige secret automatisch teruggezet en getest.
 
 ## Gebruik
 
-Start een film of aflevering en download of kies een Engelse externe
-ondertitel. Zodra de SRT stabiel in de gecontroleerde SMB-map of Kodi's
-tijdelijke map staat, verschijnt de bevestigingspopup. Kies **Nee** bij een
-verkeerde ondertitel en **Ja** om te vertalen. Bij meerdere nieuwe SRT's laat
-de add-on eerst kiezen welk bestand bedoeld is.
+Start een film of aflevering. Wacht op de automatische OpenSubtitles-zoekactie
+en controleer het voorbeeld in de bevestigingspopup. Kies **Nee** bij een
+verkeerde ondertitel en **Ja** om te vertalen. Bij Nee wordt geen vertaalopdracht
+gemaakt en niets naar SMB gekopieerd. Er is maximaal één automatische poging
+per afspeelbeurt; fouten en Nee starten geen herhaalde downloads.
+
+De Engelse download gebeurt vóór het voorbeeld en telt dus mee voor je
+OpenSubtitles-downloadlimiet, ook bij Nee. Er is geen extra API-sleutel voor
+deze koppeling nodig. De limieten en voorwaarden van je OpenSubtitles-account
+blijven gelden.
+
+Handmatig een andere Engelse ondertitel downloaden blijft mogelijk. Zodra
+een nieuwe SRT stabiel in de gecontroleerde SMB-map of Kodi's tijdelijke map
+staat, verschijnt de bestaande bevestigingspopup. Bij meerdere nieuwe SRT's
+laat de add-on eerst kiezen welk bestand bedoeld is. Je kunt automatisch
+zoeken in de instellingen uitschakelen zonder deze handmatige route te verliezen.
+
+De vertaler wijzigt de originele tijdcodes niet. Dat behoudt de timing van de
+gekozen ondertitel, maar maakt een verkeerde release niet alsnog synchroon.
+Bij ontbrekende of onjuiste videometadata kan OpenSubtitles een verkeerde match
+vinden; kies dan Nee en zoek handmatig een passende versie.
 
 ## Belangrijke Kodi-beperking
 
-Kodi geeft add-ons niet het bestandspad van de actieve ondertitelstream. Versie
-0.2.0 controleert daarom zowel de SMB-map als Kodi's tijdelijke map. Dit werkt
+Kodi geeft add-ons niet het bestandspad van de actieve ondertitelstream.
+De handmatige route controleert daarom zowel de SMB-map als Kodi's tijdelijke map. Dit werkt
 voor **nieuwe externe SRT-bestanden** die Kodi als bestand beschikbaar maakt,
 ook wanneer de originele SRT bij de film hoort. Een ingebedde ondertiteltrack
 in een MKV of een stream die nooit als SRT-bestand wordt opgeslagen, kan niet
-automatisch worden vertaald.
+rechtstreeks worden vertaald. De automatische OpenSubtitles-route kan wel een
+losse Engelse SRT ophalen als de film al ingebedde ondertiteltracks heeft.
+
+De providerkoppeling gebruikt Kodi's
+[Files.GetDirectory](https://kodi.wiki/view/JSON-RPC_API/v13.5#Files.GetDirectory)
+en de zoek-/downloadacties van de
+[officiële OpenSubtitles.com-add-on](https://github.com/opensubtitles-dev/service.subtitles.opensubtitles-com).
+De lokale tests simuleren Kodi, SMB en providerantwoorden. Een volledige proef
+op de Android-box (zoeken, bevestigen, vertalen en laden) blijft daarnaast nodig.
 
 ## Radxa-service
 
@@ -126,4 +162,6 @@ python3 -m unittest discover -s tests -v
 De tests controleren onder meer exacte tijdcode- en opmaakbewaring,
 bevestigde opdrachten, veilige Kodi-tempkopieën, padvalidatie, gestructureerde
 Codex-uitvoer, SMB-uitval en het voorkomen van afspeel-URL's in gedeelde
-opdrachten.
+opdrachten. De OpenSubtitles-tests controleren bovendien Engelse resultaten,
+cacheverversing, Nee zonder opdracht, bronwijzigingen en het afbreken bij
+een andere of opnieuw gestarte video.

@@ -18,3 +18,11 @@ msgstr "Gecontroleerde ondertitelmap"
 msgctxt "#32002"
 msgid "Kodi and the Radxa must both be able to read and write this folder."
 msgstr "Kodi en de Radxa moeten deze map allebei kunnen lezen en beschrijven."
+
+msgctxt "#32003"
+msgid "Automatically search OpenSubtitles for English subtitles"
+msgstr "Automatisch Engelse ondertitels zoeken via OpenSubtitles"
+
+msgctxt "#32004"
+msgid "Requires the official OpenSubtitles.com add-on. Downloads one English SRT per playback, then asks before translation. Downloads count towards your OpenSubtitles quota, even if you decline translation."
+msgstr "Vereist de officiële OpenSubtitles.com-add-on. Downloadt per afspeelbeurt één Engelse SRT en vraagt daarna om toestemming voor vertaling. De download telt mee voor je OpenSubtitles-limiet, ook als je de vertaling weigert."

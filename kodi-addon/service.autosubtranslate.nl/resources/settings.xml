@@ -3,6 +3,11 @@
   <section id="service.autosubtranslate.nl">
     <category id="general" label="32000" help="">
       <group id="1">
+        <setting id="opensubs_auto_search" type="boolean" label="32003" help="32004">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
         <setting id="subtitle_folder" type="path" label="32001" help="32002">
           <level>0</level>
           <default>smb://192.168.2.60/share/subtitles/</default>

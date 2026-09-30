@@ -18,3 +18,11 @@ msgstr "Controlled subtitle folder"
 msgctxt "#32002"
 msgid "Kodi and the Radxa must both be able to read and write this folder."
 msgstr "Kodi and the Radxa must both be able to read and write this folder."
+
+msgctxt "#32003"
+msgid "Automatically search OpenSubtitles for English subtitles"
+msgstr "Automatically search OpenSubtitles for English subtitles"
+
+msgctxt "#32004"
+msgid "Requires the official OpenSubtitles.com add-on. Downloads one English SRT per playback, then asks before translation. Downloads count towards your OpenSubtitles quota, even if you decline translation."
+msgstr "Requires the official OpenSubtitles.com add-on. Downloads one English SRT per playback, then asks before translation. Downloads count towards your OpenSubtitles quota, even if you decline translation."
