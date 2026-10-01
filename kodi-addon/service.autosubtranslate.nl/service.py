@@ -39,6 +39,8 @@ import sync_client  # noqa: E402
 
 
 MAX_SUBTITLE_BYTES = 2 * 1024 * 1024
+MAX_LOAD_ATTEMPTS = 5
+LOAD_RETRY_SECONDS = 5
 JOBS_PATH = os.path.join(PROFILE_PATH, "jobs.json")
 TRANSLATED_PATH = os.path.join(PROFILE_PATH, "translated")
 TEMP_PATH = xbmcvfs.translatePath("special://temp/").rstrip("/").rstrip("\\") + "/"
@@ -550,13 +552,46 @@ def poll_jobs(player: xbmc.Player, jobs: dict[str, dict]) -> bool:
 
         state = status.get("state")
         if state == "complete":
+            attempts = job.get("load_attempts", 0)
+            if type(attempts) is not int or attempts < 0:
+                attempts = 0
+            now = time.time()
+            retry_at = job.get("load_retry_at", 0)
+            # Wall-clock deadlines survive a Kodi restart. Invalid state or a
+            # clock moving backwards must not postpone loading indefinitely.
+            if type(retry_at) not in (int, float) or not 0 <= retry_at <= now + LOAD_RETRY_SECONDS:
+                retry_at = 0
+            if now < retry_at:
+                continue
+            error_message = None
             try:
+                if attempts >= MAX_LOAD_ATTEMPTS:
+                    raise OSError("Laadpogingen zijn al opgebruikt.")
                 load_completed_subtitle(player, job, status)
-            except (OSError, RuntimeError, ValueError) as exc:
+            except (OSError, RuntimeError) as exc:
+                attempts = min(attempts + 1, MAX_LOAD_ATTEMPTS)
+                # VFS/player exceptions may include private paths or URLs.
+                log(f"Gereedstaande ondertitel laden mislukt ({type(exc).__name__}, poging {attempts}/{MAX_LOAD_ATTEMPTS})", xbmc.LOGWARNING)
+                if attempts < MAX_LOAD_ATTEMPTS:
+                    job["load_attempts"] = attempts
+                    job["load_retry_at"] = time.time() + LOAD_RETRY_SECONDS
+                    changed = True
+                    if attempts == 1:
+                        xbmcgui.Dialog().notification(
+                            ADDON_NAME,
+                            "Vertaling gereed; ophalen tijdelijk mislukt. Kodi probeert het opnieuw.",
+                            xbmcgui.NOTIFICATION_INFO,
+                            6000,
+                        )
+                    continue
+                error_message = "Vertaling staat op de server, maar automatisch laden is mislukt. Kies de Nederlandse ondertitel handmatig."
+            except ValueError as exc:
                 log(str(exc), xbmc.LOGERROR)
+                error_message = safe_label(str(exc))
+            if error_message is not None:
                 xbmcgui.Dialog().notification(
                     ADDON_NAME,
-                    safe_label(str(exc)),
+                    error_message,
                     xbmcgui.NOTIFICATION_ERROR,
                     8000,
                 )

@@ -817,7 +817,7 @@ class PollingTests(KodiServiceTestCase):
         load.assert_called_once()
         save.assert_called_once_with({})
 
-    def test_complete_job_load_error_is_reported_but_job_is_removed(self):
+    def test_complete_job_validation_error_is_reported_and_job_is_removed(self):
         jobs = {"job_one": self.job()}
         status = {"job_id": "job_one", "state": "complete"}
         with (
@@ -825,7 +825,7 @@ class PollingTests(KodiServiceTestCase):
             patch.object(
                 self.service,
                 "load_completed_subtitle",
-                side_effect=OSError("[bad] remote"),
+                side_effect=ValueError("[bad] remote"),
             ),
             patch.object(self.service, "save_jobs") as save,
         ):
@@ -833,6 +833,137 @@ class PollingTests(KodiServiceTestCase):
 
         self.assertEqual(jobs, {})
         self.assertIn("(bad) remote", self.dialog.notifications[-1][0][1])
+        save.assert_called_once_with({})
+
+    def test_temporary_completed_load_error_retries_after_delay_without_retranslation(self):
+        jobs = {"job_one": self.job()}
+        status = {"job_id": "job_one", "state": "complete"}
+        for failure in (OSError("private SMB failure"), RuntimeError("private player failure")):
+            with self.subTest(failure=type(failure).__name__):
+                jobs = {"job_one": self.job()}
+                self.dialog.notifications.clear()
+                with (
+                    patch.object(self.service, "read_json", return_value=status),
+                    patch.object(self.service, "load_completed_subtitle", side_effect=[failure, None]) as load,
+                    patch.object(self.service, "save_jobs") as save,
+                    patch.object(self.service, "start_job") as translate,
+                    patch.object(self.service.time, "time", return_value=100) as clock,
+                ):
+                    self.assertTrue(self.service.poll_jobs(FakePlayer(), jobs))
+                    self.assertIn("job_one", jobs)
+                    self.assertEqual(jobs["job_one"]["load_attempts"], 1)
+                    self.assertEqual(jobs["job_one"]["load_retry_at"], 105)
+                    self.assertEqual(len(self.dialog.notifications), 1)
+                    self.assertNotIn("private", str(self.dialog.notifications))
+                    clock.return_value = 104
+                    self.assertFalse(self.service.poll_jobs(FakePlayer(), jobs))
+                    self.assertEqual(load.call_count, 1)
+                    self.assertEqual(len(self.dialog.notifications), 1)
+                    clock.return_value = 105
+                    self.assertTrue(self.service.poll_jobs(FakePlayer(), jobs))
+                    self.assertEqual(load.call_count, 2)
+                    self.assertEqual(jobs, {})
+                    self.assertEqual(save.call_count, 2)
+                    translate.assert_not_called()
+
+    def test_completed_load_has_five_total_attempts_and_only_initial_and_final_popups(self):
+        jobs = {"job_one": self.job()}
+        status = {"job_id": "job_one", "state": "complete"}
+        with (
+            patch.object(self.service, "read_json", return_value=status),
+            patch.object(self.service, "load_completed_subtitle", side_effect=OSError("private SMB failure")) as load,
+            patch.object(self.service, "save_jobs") as save,
+            patch.object(self.service.time, "time", return_value=100) as clock,
+        ):
+            for attempt in range(1, 6):
+                clock.return_value = 100 + (attempt - 1) * 5
+                self.assertTrue(self.service.poll_jobs(FakePlayer(), jobs))
+                self.assertEqual(load.call_count, attempt)
+                if attempt < 5:
+                    self.assertEqual(jobs["job_one"]["load_attempts"], attempt)
+                    self.assertEqual(len(self.dialog.notifications), 1)
+            self.assertEqual(jobs, {})
+            self.assertEqual(len(self.dialog.notifications), 2)
+            self.assertIn("server", self.dialog.notifications[-1][0][1])
+            self.assertNotIn("private", str(self.dialog.notifications))
+            self.assertEqual(save.call_count, 5)
+            self.assertFalse(self.service.poll_jobs(FakePlayer(), jobs))
+            self.assertEqual(load.call_count, 5)
+
+    def test_completed_copy_retry_survives_jobs_reload_and_loads_the_existing_srt(self):
+        video = "movie.mkv"
+        player = FakePlayer(video=video)
+        job = self.job()
+        job["video_fingerprint"] = self.service.video_fingerprint(video)
+        jobs = {"job_one": job}
+        status = {"version": 1, "job_id": "job_one", "state": "complete",
+                  "source": "job_one.en.srt", "output": "job_one.nl.srt"}
+        remote = "smb://server/subtitles/job_one.nl.srt"
+        original = "1\n00:00:01,000 --> 00:00:02,000\nHallo.\n"
+        self.vfs.files[remote] = original
+        self.vfs.files[self.service.status_path(job["source"])] = json.dumps(status)
+        self.vfs.fail_copy = True
+        with patch.object(self.service.time, "time", return_value=100) as clock:
+            self.assertTrue(self.service.poll_jobs(player, jobs))
+            jobs = self.service.load_jobs()
+            self.assertEqual(jobs["job_one"]["load_attempts"], 1)
+            self.assertEqual(jobs["job_one"]["load_retry_at"], 105)
+            self.vfs.fail_copy = False
+            clock.return_value = 104
+            self.assertFalse(self.service.poll_jobs(player, jobs))
+            self.assertEqual(player.loaded_subtitles, [])
+            clock.return_value = 105
+            self.assertTrue(self.service.poll_jobs(player, jobs))
+        self.assertEqual(jobs, {})
+        self.assertEqual(self.service.load_jobs(), {})
+        self.assertEqual(len(player.loaded_subtitles), 1)
+        self.assertEqual(self.vfs.files[player.loaded_subtitles[0]], original)
+        self.assertEqual(self.vfs.files[remote], original)
+        self.assertEqual(player.visibility, [True])
+        self.assertFalse(any(path.endswith(".translate.request.json") for path in self.vfs.files))
+
+    def test_validation_failure_after_a_temporary_error_is_not_retried(self):
+        jobs = {"job_one": {**self.job(), "load_attempts": 1, "load_retry_at": 105}}
+        status = {"job_id": "job_one", "state": "complete"}
+        with (
+            patch.object(self.service, "read_json", return_value=status),
+            patch.object(self.service, "load_completed_subtitle", side_effect=ValueError("ongeldige uitvoernaam")) as load,
+            patch.object(self.service, "save_jobs") as save,
+            patch.object(self.service.time, "time", return_value=105),
+        ):
+            self.assertTrue(self.service.poll_jobs(FakePlayer(), jobs))
+        self.assertEqual(jobs, {})
+        load.assert_called_once()
+        save.assert_called_once_with({})
+
+    def test_invalid_persisted_retry_values_do_not_block_or_crash_loading(self):
+        status = {"job_id": "job_one", "state": "complete"}
+        for attempts, retry_at in (("bad", None), (-1, float("nan")), (False, "later"), (1, 9999)):
+            with self.subTest(attempts=attempts, retry_at=retry_at):
+                jobs = {"job_one": {**self.job(), "load_attempts": attempts, "load_retry_at": retry_at}}
+                with (
+                    patch.object(self.service, "read_json", return_value=status),
+                    patch.object(self.service, "load_completed_subtitle") as load,
+                    patch.object(self.service, "save_jobs"),
+                    patch.object(self.service.time, "time", return_value=100),
+                ):
+                    self.assertTrue(self.service.poll_jobs(FakePlayer(), jobs))
+                    load.assert_called_once()
+                self.assertEqual(jobs, {})
+
+    def test_exhausted_persisted_retry_does_not_make_a_sixth_load_attempt(self):
+        jobs = {"job_one": {**self.job(), "load_attempts": 5, "load_retry_at": 105}}
+        status = {"job_id": "job_one", "state": "complete"}
+        with (
+            patch.object(self.service, "read_json", return_value=status),
+            patch.object(self.service, "load_completed_subtitle") as load,
+            patch.object(self.service, "save_jobs") as save,
+            patch.object(self.service.time, "time", return_value=105),
+        ):
+            self.assertTrue(self.service.poll_jobs(FakePlayer(), jobs))
+        load.assert_not_called()
+        self.assertEqual(jobs, {})
+        self.assertEqual(len(self.dialog.notifications), 1)
         save.assert_called_once_with({})
 
     def test_failed_job_shows_sanitized_message_and_is_removed(self):

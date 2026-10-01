@@ -19,11 +19,14 @@ Nederlandse SRT zodra die klaar is.
 4. Met de optionele, beveiligd gekoppelde synchronisatie vergelijkt de Radxa
    eerst de SRT met de filmaudio via ffsubsync. De oorspronkelijke SRT blijft
    onaangeroerd; alleen een tijdelijke kopie krijgt gecorrigeerde tijdcodes.
-5. De Radxa vertaalt de dialoog met GPT-5.6 Luna. Als Luna tijdelijk vol is,
-   wordt GPT-5.6 Terra geprobeerd.
+5. De Radxa vertaalt de dialoog met GPT-5.6 Luna. Als Luna tijdelijk vol is
+   of een aanvraag te lang duurt, wordt GPT-5.6 Terra geprobeerd.
 6. Cue-nummers, tijdcodes (eventueel gecorrigeerd), HTML/ASS-tags, witruimte en
    regelafbrekingen worden lokaal bewaard en niet door het model herschreven.
 7. Kodi laadt de Nederlandse SRT alleen wanneer dezelfde video nog speelt.
+   Bij een tijdelijke overdrachtsfout probeert de add-on het maximaal vijf
+   keer, met vijf seconden tussen de pogingen. De bestaande vertaling wordt
+   daarvoor niet opnieuw gemaakt.
 
 De afspeel-URL wordt nooit in de gedeelde map opgeslagen. Kodi bewaart lokaal
 alleen een SHA-256-vingerafdruk om te controleren of dezelfde video nog speelt.
@@ -32,7 +35,7 @@ deze koppeling kopieert of leest geen OpenSubtitles-inloggegevens.
 
 ## Kodi installeren
 
-1. Download `service.autosubtranslate.nl-0.4.0.zip` bij
+1. Download `service.autosubtranslate.nl-0.4.1.zip` bij
    [GitHub Releases](https://github.com/cracknek22/kodi-auto-subtitle-nl/releases).
 2. Zet in Kodi zo nodig **Instellingen → Systeem → Add-ons → Onbekende
    bronnen** aan.
