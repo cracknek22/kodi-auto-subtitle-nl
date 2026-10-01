@@ -35,6 +35,7 @@ from core import (  # noqa: E402
     video_fingerprint,
 )
 import opensubs  # noqa: E402
+from progress import ProgressPresenter  # noqa: E402
 import sync_client  # noqa: E402
 
 
@@ -543,10 +544,25 @@ def load_completed_subtitle(
     )
 
 
-def poll_jobs(player: xbmc.Player, jobs: dict[str, dict]) -> bool:
+def poll_jobs(
+    player: xbmc.Player,
+    jobs: dict[str, dict],
+    *,
+    progress: ProgressPresenter | None = None,
+) -> bool:
     changed = False
+    statuses: dict[str, dict | None] = {}
     for job_id, job in list(jobs.items()):
-        status = read_json(status_path(job["source"]))
+        try:
+            status = read_json(status_path(job["source"]))
+        except (OSError, RuntimeError, UnicodeError, ValueError):
+            statuses[job_id] = None
+            log(
+                "Vertaalstatus tijdelijk niet leesbaar.",
+                xbmc.LOGWARNING,
+            )
+            continue
+        statuses[job_id] = status
         if not status or status.get("job_id") != job_id:
             continue
 
@@ -610,10 +626,22 @@ def poll_jobs(player: xbmc.Player, jobs: dict[str, dict]) -> bool:
 
     if changed:
         save_jobs(jobs)
+    if progress is not None:
+        try:
+            progress.refresh(
+                jobs,
+                statuses,
+                current_video_fingerprint(player),
+            )
+        except Exception:
+            log(
+                "Voortgangsvenster kon niet worden bijgewerkt.",
+                xbmc.LOGWARNING,
+            )
     return changed
 
 
-def main() -> None:
+def _run_service(progress: ProgressPresenter) -> None:
     xbmcvfs.mkdirs(PROFILE_PATH)
     xbmcvfs.mkdirs(TRANSLATED_PATH)
     monitor = xbmc.Monitor()
@@ -641,7 +669,7 @@ def main() -> None:
     while not monitor.waitForAbort(1.0):
         automatic_search.observe(player)
         try:
-            poll_jobs(player, jobs)
+            poll_jobs(player, jobs, progress=progress)
         except (OSError, RuntimeError, ValueError) as exc:
             log(f"Tijdelijke fout bij vertaalstatus: {safe_label(str(exc))}", xbmc.LOGWARNING)
 
@@ -787,7 +815,26 @@ def main() -> None:
         previous = current
         temp_previous = temp_current
 
-    log("Service gestopt")
+
+def _default_progress_display():
+    from progress_view import ProgressOverlay
+
+    return ProgressOverlay(ADDON_PATH)
+
+
+def main(display_factory=None) -> None:
+    progress = ProgressPresenter(
+        _default_progress_display if display_factory is None else display_factory,
+        on_error=lambda: log(
+            "Voortgangsvenster kon niet worden bijgewerkt.",
+            xbmc.LOGWARNING,
+        ),
+    )
+    try:
+        _run_service(progress)
+    finally:
+        progress.close()
+        log("Service gestopt")
 
 
 if __name__ == "__main__":

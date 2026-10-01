@@ -35,7 +35,7 @@ deze koppeling kopieert of leest geen OpenSubtitles-inloggegevens.
 
 ## Kodi installeren
 
-1. Download `service.autosubtranslate.nl-0.4.1.zip` bij
+1. Download `service.autosubtranslate.nl-0.4.2.zip` bij
    [GitHub Releases](https://github.com/cracknek22/kodi-auto-subtitle-nl/releases).
 2. Zet in Kodi zo nodig **Instellingen → Systeem → Add-ons → Onbekende
    bronnen** aan.
@@ -75,6 +75,22 @@ test de nieuwe aanmelding en controleert dat het oude wachtwoord is geweigerd.
 Bij een fout wordt de vorige secret automatisch teruggezet en getest.
 
 ## Gebruik
+
+Tijdens een opdracht zie je een kleine voortgangsbalk rechtsboven in de
+beeldvullende video. In Kodi-menu's wordt de achtergrondvoortgang getoond.
+De balk neemt geen bediening over en onderbreekt de film niet:
+
+- **Synchroniseren…** heeft geen geschat percentage.
+- **Vertalen… 65%** toont de echte voortgang van de Radxa. Het percentage
+  verandert per afgeronde groep ondertitelregels, niet continu per seconde.
+- **Vertaling gereed; ophalen…** blijft staan wanneer Kodi het bestand nog
+  moet ophalen, ook tijdens de begrensde herhaalpogingen.
+
+De status wordt ongeveer elke seconde gecontroleerd. Bij een tijdelijk
+onleesbare serverstatus toont de balk dat er op bevestiging wordt gewacht.
+Na afronding, een definitieve fout of het stoppen van de service verdwijnt hij.
+De balk start zelf geen nieuwe vertaling. Bij meerdere opdrachten krijgt de
+huidige video voorrang en staat het aantal actieve opdrachten erbij.
 
 Start een film of aflevering. Wacht op de automatische OpenSubtitles-zoekactie
 en controleer het voorbeeld in de bevestigingspopup. Kies **Nee** bij een

@@ -983,8 +983,190 @@ class PollingTests(KodiServiceTestCase):
         self.assertNotIn("[", self.dialog.notifications[-1][0][1])
         save.assert_called_once_with({})
 
+    def test_complete_retry_is_reported_to_progress_with_current_video(self):
+        video = "movie.mkv"
+        fingerprint = self.service.video_fingerprint(video)
+        jobs = {
+            "job_one": {
+                **self.job(),
+                "video_fingerprint": fingerprint,
+            }
+        }
+        status = {"job_id": "job_one", "state": "complete"}
+        refresh_calls = []
+        progress = types.SimpleNamespace(
+            refresh=lambda *args: refresh_calls.append(args)
+        )
+        with (
+            patch.object(self.service, "read_json", return_value=status),
+            patch.object(
+                self.service,
+                "load_completed_subtitle",
+                side_effect=OSError("private SMB failure"),
+            ),
+            patch.object(self.service, "save_jobs"),
+            patch.object(self.service.time, "time", return_value=100),
+        ):
+            self.assertTrue(
+                self.service.poll_jobs(
+                    FakePlayer(video=video),
+                    jobs,
+                    progress=progress,
+                )
+            )
+
+        self.assertEqual(len(refresh_calls), 1)
+        refreshed_jobs, statuses, active = refresh_calls[0]
+        self.assertIs(refreshed_jobs, jobs)
+        self.assertEqual(statuses, {"job_one": status})
+        self.assertEqual(active, fingerprint)
+        self.assertEqual(jobs["job_one"]["load_attempts"], 1)
+
+    def test_progress_failure_never_blocks_completed_subtitle_loading(self):
+        jobs = {"job_one": self.job()}
+        status = {"job_id": "job_one", "state": "complete"}
+
+        class BrokenProgress:
+            @staticmethod
+            def refresh(*_args):
+                raise RuntimeError("private UI failure")
+
+        with (
+            patch.object(self.service, "read_json", return_value=status),
+            patch.object(self.service, "load_completed_subtitle") as load,
+            patch.object(self.service, "save_jobs") as save,
+        ):
+            self.assertTrue(
+                self.service.poll_jobs(
+                    FakePlayer(),
+                    jobs,
+                    progress=BrokenProgress(),
+                )
+            )
+
+        load.assert_called_once()
+        save.assert_called_once_with({})
+        self.assertEqual(jobs, {})
+        rendered_logs = str(self.service.xbmc.logs)
+        self.assertIn("Voortgangsvenster", rendered_logs)
+        self.assertNotIn("private UI failure", rendered_logs)
+
+    def test_status_read_failure_clears_stale_percent_and_keeps_polling(self):
+        video = "movie.mkv"
+        fingerprint = self.service.video_fingerprint(video)
+        jobs = {
+            "job_one": {
+                **self.job("job_one"),
+                "video_fingerprint": fingerprint,
+            },
+            "job_two": self.job("job_two"),
+        }
+        events = []
+
+        class Display:
+            @staticmethod
+            def create(heading, message):
+                events.append(("create", heading, message))
+
+            @staticmethod
+            def update(percent, heading, message):
+                events.append(("update", percent, heading, message))
+
+            @staticmethod
+            def close():
+                events.append(("close",))
+
+        progress = self.service.ProgressPresenter(Display)
+        progress.refresh(
+            jobs,
+            {
+                "job_one": {
+                    "job_id": "job_one",
+                    "state": "processing",
+                    "progress": 73,
+                }
+            },
+            fingerprint,
+        )
+        second_status = {
+            "job_id": "job_two",
+            "state": "processing",
+            "progress": 20,
+        }
+        with patch.object(
+            self.service,
+            "read_json",
+            side_effect=[
+                OSError("smb://secret:password@server/private-status"),
+                second_status,
+            ],
+        ) as read:
+            self.assertFalse(
+                self.service.poll_jobs(
+                    FakePlayer(video=video),
+                    jobs,
+                    progress=progress,
+                )
+            )
+
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(
+            events[-1],
+            (
+                "update",
+                0,
+                "Ondertitels vertalen",
+                "Wachten op bevestigde serverstatus… · 2 actief",
+            ),
+        )
+        rendered_logs = str(self.service.xbmc.logs)
+        self.assertIn("Vertaalstatus tijdelijk niet leesbaar", rendered_logs)
+        self.assertNotIn("secret", rendered_logs)
+        self.assertNotIn("password", rendered_logs)
+
 
 class MainLoopTests(KodiServiceTestCase):
+    def test_main_always_closes_progress_overlay_after_unexpected_failure(self):
+        events = []
+
+        class Display:
+            @staticmethod
+            def create(heading, message):
+                events.append(("create", heading, message))
+
+            @staticmethod
+            def update(percent, heading, message):
+                events.append(("update", percent, heading, message))
+
+            @staticmethod
+            def close():
+                events.append(("close",))
+
+        def fail_after_open(progress):
+            progress.refresh(
+                {"job_one": PollingTests.job()},
+                {
+                    "job_one": {
+                        "job_id": "job_one",
+                        "state": "processing",
+                        "progress": 10,
+                    }
+                },
+                "",
+            )
+            raise RuntimeError("service stopped unexpectedly")
+
+        with (
+            patch.object(self.service, "_run_service", side_effect=fail_after_open),
+            self.assertRaisesRegex(RuntimeError, "unexpectedly"),
+        ):
+            self.service.main(display_factory=Display)
+
+        self.assertEqual(events[-1], ("close",))
+        self.assertTrue(
+            any("Service gestopt" in args[0] for args, _kwargs in self.service.xbmc.logs)
+        )
+
     def test_synchronized_manual_and_temp_flows_register_only_after_yes(self):
         for from_temp in (False, True):
             for confirmed in (False, True):
