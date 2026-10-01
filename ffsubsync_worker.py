@@ -14,7 +14,52 @@ import shlex
 import shutil
 import signal
 import sys
+import threading
 import time
+
+
+def install_sparse_reference_fix(api):
+    """Keep unobserved 0.5.1 audio neutral without weakening quality checks.
+
+    Upstream fills unsampled time with zero, but FFTAligner maps x to 2*x-1.
+    Those unknown gaps consequently count as certain silence and can make even
+    a perfect match score negative. Record only successfully extracted sample
+    spans; after upstream has checked for actual speech, map unknown time to 0.5
+    (zero FFT weight). Observed speech and silence remain completely unchanged.
+    """
+    import numpy as np
+
+    base = api.MultiSegmentVideoSpeechTransformer
+    if getattr(base, "_autosubtranslate_neutral_sparse", False):
+        return
+
+    class NeutralSparseReference(base):
+        _autosubtranslate_neutral_sparse = True
+
+        def _extract_segment_speech(self, fname, start):
+            actual_start, speech = super()._extract_segment_speech(fname, start)
+            with self._observed_spans_lock:
+                self._observed_spans.append((int(actual_start * self.sample_rate), len(speech)))
+            return actual_start, speech
+
+        def fit(self, fname, *args):
+            self._observed_spans = []
+            self._observed_spans_lock = threading.Lock()
+            # Preserve upstream extraction, failed-window handling and its
+            # no-speech rejection BEFORE any neutral values are introduced.
+            super().fit(fname, *args)
+            signal = self.video_speech_results_
+            observed = np.zeros(len(signal), dtype=bool)
+            for begin, length in self._observed_spans:
+                end = min(begin + length, len(signal))
+                if end > begin:
+                    observed[begin:end] = True
+            signal[~observed] = 0.5
+            return self
+
+    # Do not replace the class in speech_transformers itself: its explicit
+    # super(Class, self) relies on that original module-global class identity.
+    api.MultiSegmentVideoSpeechTransformer = NeutralSparseReference
 
 
 def restricted_binaries(reference, private_directory):
@@ -118,6 +163,7 @@ def main():
                     result = {"error": "dependency"}
                 else:
                     from ffsubsync import ffsubsync as api
+                    install_sparse_reference_fix(api)
                     ffmpeg_path = restricted_binaries(payload["reference"], Path(payload["output"]).parent)
                     result = synchronize(payload, api, ffmpeg_path=ffmpeg_path)
             except (ImportError, importlib.metadata.PackageNotFoundError):

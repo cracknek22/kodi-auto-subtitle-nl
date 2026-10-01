@@ -92,9 +92,10 @@ zoeken in de instellingen uitschakelen zonder deze handmatige route te verliezen
 
 Zonder synchronisatie wijzigt de vertaler de tijdcodes niet. Met synchronisatie
 past ffsubsync de timing vóór het vertalen aan; het model zelf verandert nooit
-tijdcodes. Dit is geen garantie dat een verkeerde montage of release passend
-kan worden gemaakt. De controle gebruikt spraakactiviteit, geen begrip van de
-gesproken tekst. Bij een mislukte synchronisatie stopt de hele opdracht; er
+tijdcodes. Verschillen in begintijd of afspeelsnelheid kunnen zo worden
+gecorrigeerd, maar een afwijkende montage of verkeerde aflevering kan niet
+gegarandeerd passend worden gemaakt. De controle gebruikt spraakactiviteit,
+geen begrip van de gesproken tekst. Bij een mislukte synchronisatie stopt de hele opdracht; er
 wordt niet stilzwijgend zonder synchronisatie vertaald.
 Bij ontbrekende of onjuiste videometadata kan OpenSubtitles een verkeerde match
 vinden; kies dan Nee en zoek handmatig een passende versie.
@@ -203,6 +204,11 @@ een andere of opnieuw gestarte video.
 De synchronisatietests controleren tevens HTTPS-pinning vóór tokenoverdracht,
 eenmalige referenties, publieke mediahosts, bronhashes, veilige redirects,
 beperkte FFmpeg-protocollen/formaten en stoppen bij synchronisatiefouten.
+Met de optionele `ffsubsync==0.5.1`-afhankelijkheid testen
+`tests/test_sparse_sync.py` de audiosteekproeven: niet-beluisterde stukken
+krijgen geen gewicht in de vergelijking, terwijl daadwerkelijk gemeten stilte
+stilte blijft. De worker corrigeert hiervoor de nulopvulling van versie 0.5.1;
+de kwaliteitsgrenzen blijven ongewijzigd. Zonder bruikbare spraak stopt de test.
 De optionele echte audiotest staat in `tests/test_sync_audio_integration.py`:
 24 zelf gegenereerde zinnen met een opzettelijke vertraging van 3 seconden.
 De mediaproxy en FFmpeg/ffsubsync zijn daarbij echt; de vertaaluitvoer is een
