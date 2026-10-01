@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+from codex_runtime import CODEX_ISOLATION_ARGS, run_codex
+
 
 LOGGER = logging.getLogger("subtitle-translator")
 TIMESTAMP_MARKER = "-->"
@@ -259,9 +261,9 @@ class CodexTranslator:
         reasoning_effort: str = "low",
         fallback_model: str | None = "gpt-5.6-terra",
         fallback_reasoning_effort: str = "low",
-        batch_size: int = 5000,
-        timeout: float = 1800,
-        runner: Runner = subprocess.run,
+        batch_size: int = 80,
+        timeout: float = 180,
+        runner: Runner = run_codex,
         work_dir: Path = Path("/tmp/subtitle-translator-codex"),
     ) -> None:
         self.binary = binary
@@ -366,9 +368,11 @@ class CodexTranslator:
 
             translations: object = None
             for attempt_index, (model, reasoning_effort) in enumerate(attempts):
+                has_fallback = attempt_index + 1 < len(attempts)
                 command = [
                     self.binary,
                     "exec",
+                    *CODEX_ISOLATION_ARGS,
                     "--strict-config",
                     "--ephemeral",
                     "--sandbox",
@@ -421,11 +425,17 @@ class CodexTranslator:
                         "Codex is niet geïnstalleerd op de Radxa."
                     ) from exc
                 except subprocess.TimeoutExpired as exc:
+                    if has_fallback:
+                        LOGGER.warning(
+                            "Codex-model %s reageerde niet op tijd; probeer %s",
+                            model,
+                            attempts[attempt_index + 1][0],
+                        )
+                        continue
                     raise RuntimeError("Codex-vertaling duurde te lang.") from exc
 
                 if completed.returncode != 0:
                     error = str(completed.stderr or "").casefold()
-                    has_fallback = attempt_index + 1 < len(attempts)
                     if "at capacity" in error and has_fallback:
                         LOGGER.warning(
                             "Codex-model %s is tijdelijk vol; probeer %s",
@@ -510,7 +520,7 @@ class ConfirmedJobScanner:
         translate: Callable[[Sequence[str]], Sequence[str]],
         *,
         max_subtitle_bytes: int = MAX_SUBTITLE_BYTES,
-        translation_batch_size: int = 250,
+        translation_batch_size: int = 50,
         synchronizer=None,
         reference_store=None,
         reference_proxy_factory=None,
@@ -722,8 +732,8 @@ def main() -> None:
             "CODEX_FALLBACK_REASONING_EFFORT",
             "low",
         ),
-        batch_size=int(os.environ.get("BATCH_SIZE", "5000")),
-        timeout=float(os.environ.get("CODEX_TIMEOUT", "1800")),
+        batch_size=int(os.environ.get("BATCH_SIZE", "80")),
+        timeout=float(os.environ.get("CODEX_TIMEOUT", "180")),
         work_dir=Path(
             os.environ.get(
                 "CODEX_WORK_DIR",
@@ -762,7 +772,7 @@ def main() -> None:
         }
     scanner = ConfirmedJobScanner(
         watch_dir, translator,
-        translation_batch_size=int(os.environ.get("TRANSLATION_BATCH_SIZE", "250")),
+        translation_batch_size=int(os.environ.get("TRANSLATION_BATCH_SIZE", "50")),
         **sync_options,
     )
 

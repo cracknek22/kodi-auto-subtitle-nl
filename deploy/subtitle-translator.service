@@ -26,9 +26,9 @@ Environment=CODEX_MODEL=gpt-5.6-luna
 Environment=CODEX_REASONING_EFFORT=low
 Environment=CODEX_FALLBACK_MODEL=gpt-5.6-terra
 Environment=CODEX_FALLBACK_REASONING_EFFORT=low
-Environment=CODEX_TIMEOUT=1800
-Environment=BATCH_SIZE=5000
-Environment=TRANSLATION_BATCH_SIZE=250
+Environment=CODEX_TIMEOUT=180
+Environment=BATCH_SIZE=80
+Environment=TRANSLATION_BATCH_SIZE=50
 Environment=CODEX_WORK_DIR=/home/radxa/.local/share/subtitle-translator/codex-workspace
 
 [Install]

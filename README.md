@@ -158,6 +158,14 @@ geheugengrens naar 1 GB en behoudt die CPU-grens. Dit zijn maxima, geen continu
 gereserveerd geheugen. ffsubsync gebruikt lokaal CPU voor audioanalyse;
 de taalmodelberekening blijft in de cloud.
 
+De vertaler verwerkt standaard 50 opeenvolgende SRT-regels per voortgangsstap,
+met maximaal 80 tekstfragmenten per modelaanvraag. Een aanvraag wacht maximaal
+180 seconden. Bij een time-out wordt de volledige gestarte procesgroep gestopt
+voordat het al ingestelde reservemodel wordt geprobeerd. Mislukt ook die poging,
+dan stopt de opdracht zonder een gedeeltelijke Nederlandse SRT te publiceren.
+`deploy/translation-reliability.conf` kan als systemd-drop-in worden gebruikt
+om deze grenzen toe te passen zonder een bestaande serviceconfiguratie te vervangen.
+
 Voor de huidige Radxa-installatie (`radxa` als gebruiker) zijn de
 installatiestappen:
 

@@ -8,7 +8,7 @@ de originele SRT blijven behouden. Werk Kodi pas bij wanneer de box vrij is.
 
 - Maak een herstelkopie van de bestaande Python-bestanden en user-service.
 - Wacht tot er geen vertaalopdracht actief is voordat je de service herstart.
-- Plaats naast `subtitle_translator.py` ook `subtitle_sync.py`,
+- Plaats naast `subtitle_translator.py` ook `codex_runtime.py`, `subtitle_sync.py`,
   `ffsubsync_worker.py`, `sync_reference.py` en `media_proxy.py`.
 - Python 3.11+, OpenSSL, FFmpeg en ffprobe moeten beschikbaar zijn.
 - Gebruik een aparte Python-omgeving. Er zijn geen Ollama-, Gemma-, Torch- of
